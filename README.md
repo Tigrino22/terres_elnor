@@ -38,6 +38,7 @@ npm run typecheck
 - Minicarte, carte du monde façon parchemin (M), sac et atelier (I, F), aide (H).
 - Page de connexion : création de compte (identifiant, mot de passe, nom du personnage, peuple) ou connexion. Un compte ne peut être connecté qu'une fois : une nouvelle connexion ferme l'ancienne.
 - Sauvegarde automatique toutes les 30 s, à chaque changement de carte, montée de niveau, fabrication, point de sort et à la déconnexion. On reprend sur la même carte, au même endroit, avec son niveau, son XP, ses écus, son sac, son équipement et ses sorts.
+- Chaque pièce d'équipement est dessinée sur le personnage (arc, capuche, tunique, bottes) ; sans équipement, il porte sa tenue de départ.
 - Fenêtre d'équipement (C) : silhouette du personnage, 4 emplacements, caractéristiques, pièces du sac comparées à celles portées ; clic pour équiper ou retirer.
 - Grimoire (K) : un point de sort par niveau gagné, chaque sort monte du rang 1 au rang 5 (un rang tous les 3 niveaux après son déblocage), avec plus de dégâts, une zone plus large, une immobilisation ou une marque plus longue, un bond plus long. Les points peuvent être réinitialisés.
 
@@ -49,11 +50,13 @@ npm run typecheck
 | `src/sim` | Simulation autoritaire du monde et comptes, sans dépendance navigateur ni Node |
 | `src/server` | Serveur HTTP + WebSocket, boucle à 20 ticks par seconde, stockage des comptes |
 | `src/client` | Rendu Three.js low-poly, interface HTML, entrées, réseau |
+| `src/client/assets` | Apparence du jeu : un fichier par élément (personnage, équipement, objet, sort, monstre, ressource, décor). Voir son `LISEZMOI.md` |
+| `src/client/carte-monde` | Carte du monde (touche M) : données des régions, géographie, dessin du parchemin, fenêtre navigable à la souris. Voir son `LISEZMOI.md` |
 | `tests` | Tests Vitest de la simulation |
 
 Les cartes sont générées de façon déterministe à partir de leur graine : le serveur et le client calculent la même carte, rien n'est envoyé sur le réseau à part les entités.
 
-L'équilibrage (monstres, sorts, objets, recettes, cartes) est entièrement dans `src/shared/data.ts`.
+L'équilibrage (monstres, sorts, objets, recettes, cartes) est entièrement dans `src/shared/data.ts`. L'apparence est à part, dans `src/client/assets` : changer la charte graphique ne touche jamais aux règles du jeu.
 
 ## Prochaines étapes proposées
 

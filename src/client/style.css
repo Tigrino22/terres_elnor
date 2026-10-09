@@ -153,17 +153,6 @@ kbd{font-family:inherit;font-weight:700;color:var(--ink);background:#00000066;bo
 .btn.off{opacity:.45;cursor:default;filter:none}
 .warn{font-size:13px;color:#ff9a86;text-align:center;margin-top:6px;min-height:18px}
 
-#wmap{width:min(1560px,98vw);height:min(900px,96vh);padding:0;overflow:hidden}
-#wmap canvas{position:absolute;left:0;top:0;height:100%;aspect-ratio:1250/900}
-#wmap .side{position:absolute;right:12px;top:12px;bottom:12px;width:300px;padding:16px}
-#wmap .side h1{font-family:Cinzel;font-size:21px;margin:0 0 2px;color:var(--gold2)}
-#wmap .side .s{font-size:13px;color:var(--mute);margin-bottom:12px}
-#wmap .z{display:flex;align-items:center;gap:9px;padding:5px 6px;border-radius:5px;font-size:14px}
-#wmap .z i{width:14px;height:14px;border-radius:3px;border:1px solid #0008;flex:none}
-#wmap .z span{margin-left:auto;color:var(--mute);font-size:12.5px}
-#wmap .z.lock{color:#8a7c62}
-#wmap .tipw{position:absolute;padding:8px 12px;font-size:13px;line-height:1.35;width:220px;pointer-events:none;display:none}
-#wmap .tipw b{font-family:Cinzel;color:var(--gold2)}
 #help{width:min(620px,94vw);padding:0 0 18px}
 #help .body{padding:14px 22px;font-size:15px;line-height:1.55}
 #help .body p{margin:6px 0}

@@ -139,3 +139,37 @@ describe('grimoire', () => {
     expect(hits(4)).toBe(319);
   });
 });
+
+describe('déplacements et dégâts', () => {
+  const run = (mx: number, mz: number, perTick: number) => {
+    const { g, p } = setup();
+    p.x = 13; p.z = 13;
+    const x0 = p.x, z0 = p.z;
+    let seq = 0;
+    for (let k = 0; k < 20; k++) { for (let i = 0; i < perTick; i++) g.handle(p, { t: 'input', seq: ++seq, mx, mz }); g.tick(); }
+    return Math.hypot(p.x - x0, p.z - z0);
+  };
+
+  it('va aussi vite en diagonale qu’en ligne droite, quelle que soit la longueur du vecteur envoyé', () => {
+    const droit = run(1, 0, 1);
+    expect(droit).toBeCloseTo(4.2, 1); // 4,2 cases par seconde
+    expect(run(1, 1, 1)).toBeCloseTo(droit, 5);
+    expect(run(50, -50, 1)).toBeCloseTo(droit, 5);
+  });
+
+  it('envoyer plus d’entrées que prévu ne fait pas aller plus vite', () => {
+    expect(run(1, 0, 4)).toBeLessThanOrEqual(run(1, 0, 1) + 3 * 4.2 * DT + 1e-9);
+  });
+
+  it('les dégâts reçus sont toujours des nombres entiers, même à travers un bouclier fractionnaire', () => {
+    const { g, p, inbox } = setup();
+    const m = g.maps.get('route')!;
+    const mob = m.mobs.find(o => o.kind === 'gorrok')!;
+    p.sh = 7.56; p.lastHurt = -99;
+    mob.x = p.x + 0.8; mob.z = p.z; mob.state = 'chase'; mob.target = p.id; mob.atkTimer = 0;
+    for (let k = 0; k < 40; k++) { p.hp = p.stats.mhp; g.tick(); }
+    const dmg = inbox.flatMap(x => x.t === 'ev' ? x.ev : []).filter(e => e.e === 'dmg' && e.id === p.id);
+    expect(dmg.length).toBeGreaterThan(0);
+    for (const e of dmg) if (e.e === 'dmg') expect(Number.isInteger(e.n), String(e.n)).toBe(true);
+  });
+});

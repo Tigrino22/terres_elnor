@@ -29,6 +29,7 @@ export class Player {
   target: number | null = null;
   inputs: { seq: number; mx: number; mz: number }[] = [];
   lastSeq = 0;
+  moveCredit = 0;
   moving = false;
   lastHurt = -99; lastAtk = -99; atkTimer = 0;
   dead = 0;
@@ -187,8 +188,9 @@ export class Game {
     switch (msg.t) {
       case 'input': {
         if (!Number.isFinite(msg.seq) || !Number.isFinite(msg.mx) || !Number.isFinite(msg.mz)) return;
+        // direction normalisée : en diagonale on ne va pas plus vite qu'en ligne droite
         const l = Math.hypot(msg.mx, msg.mz);
-        const mx = l > 1 ? msg.mx / l : msg.mx, mz = l > 1 ? msg.mz / l : msg.mz;
+        const mx = l > 1e-6 ? msg.mx / l : 0, mz = l > 1e-6 ? msg.mz / l : 0;
         if (p.inputs.length < 40) p.inputs.push({ seq: msg.seq, mx, mz });
         break;
       }
@@ -286,10 +288,13 @@ export class Game {
       }
       return;
     }
-    // déplacement : une entrée par tick, rattrapage si le client a pris de l'avance
-    let n = p.inputs.length > 3 ? 2 : 1;
+    // déplacement : une entrée = un pas de durée DT. Le crédit gagne un pas par tick (3 au plus en réserve)
+    // pour rattraper un retard réseau, sans jamais permettre d'aller plus vite qu'un pas par tick en moyenne.
+    p.moveCredit = Math.min(3, p.moveCredit + 1);
+    let n = Math.min(2, Math.floor(p.moveCredit));
     p.moving = false;
     while (n-- > 0 && p.inputs.length) {
+      p.moveCredit--;
       const inp = p.inputs.shift()!;
       p.lastSeq = inp.seq;
       if (inp.mx || inp.mz) {
@@ -471,10 +476,11 @@ export class Game {
   private hurt(p: Player, m: MapInstance, n: number) {
     if (p.dead) return;
     p.lastHurt = this.time;
-    let rest = Math.round(n);
+    // dégâts toujours entiers : le bouclier (qui se recharge par fractions) absorbe un nombre entier de points
+    let rest = Math.max(0, Math.round(n));
     if (p.sh > 0) {
-      const a = Math.min(p.sh, rest);
-      p.sh -= a; rest -= a;
+      const a = Math.min(rest, Math.ceil(p.sh));
+      p.sh = Math.max(0, p.sh - a); rest -= a;
       if (a) m.events.push({ e: 'dmg', id: p.id, n: a, shield: true });
     }
     if (rest > 0) { p.hp -= rest; m.events.push({ e: 'dmg', id: p.id, n: rest }); }
@@ -684,7 +690,7 @@ export class Game {
     const ents: EntSnap[] = [];
     for (const p of m.players) ents.push({
       id: p.id, k: 'p', x: r2(p.x), z: r2(p.z), s: p.race, name: p.name, lv: p.level,
-      hp: Math.round(p.hp), mhp: p.stats.mhp, f: r2(p.f), fl: (p.dead ? 1 : 0) | (t - p.lastAtk < 4 ? 8 : 0), tg: p.target ?? undefined,
+      hp: Math.round(p.hp), mhp: p.stats.mhp, f: r2(p.f), fl: (p.dead ? 1 : 0) | (t - p.lastAtk < 4 ? 8 : 0), tg: p.target ?? undefined, eq: p.equip,
     });
     for (const o of m.mobs) if (o.state !== 'dead') ents.push({
       id: o.id, k: 'm', x: r2(o.x), z: r2(o.z), s: o.kind, lv: o.def.level, hp: Math.round(o.hp), mhp: o.def.hp, f: r2(o.f),

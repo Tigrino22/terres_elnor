@@ -1,17 +1,16 @@
 // Interface HTML par-dessus la vue 3D : cadres, barre de sorts, chat, minicarte,
 // fenêtre personnage (sac + atelier), carte du monde et aide.
 
-import { ITEMS, ItemDef, MAPS, MOBS, RECIPES, SPELLS, SpellId, Slot } from '../shared/data';
+import { ITEMS, ItemDef, MOBS, RECIPES, SPELLS, SpellId, Slot } from '../shared/data';
 import { MapData, T } from '../shared/mapgen';
 import type { EntSnap, SelfState } from '../shared/protocol';
 import { MAX_RANK, fxLines, rankLevel, rankOf, spellFx } from '../shared/ranks';
-import { itemIcons, spellIcons } from './icons';
-import { drawWorldMap, cellAt, WM } from './worldmap';
+import { itemIcon, spellIcon, verrou } from './assets';
+import { FenetreCarte } from './carte-monde/fenetre';
 
 const $ = <E extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as E;
 const nb = (n: number) => Math.round(n).toLocaleString('fr-FR');
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]!));
-export const icon = (k: string) => itemIcons[k] ?? spellIcons[k] ?? spellIcons.lock;
 const RARITY: Record<string, string> = { commun: '', 'peu-commun': 'r1', rare: 'r2', epique: 'r3' };
 const RNAME: Record<string, string> = { commun: 'Commun', 'peu-commun': 'Peu commun', rare: 'Rare', epique: 'Épique' };
 const SLOTS: [Slot, string][] = [['arme', 'Arme'], ['tete', 'Tête'], ['torse', 'Torse'], ['pieds', 'Pieds']];
@@ -68,11 +67,11 @@ export class Hud {
       <div class="bar mp"><i></i><b>Mana</b><span></span></div></div>`);
     add(`<div id="target" class="panel"><div class="row"><span class="nm"></span><span class="lv"></span></div><div class="bar hp"><i></i><span></span></div><div class="tag"></div></div>`);
     add(`<div id="mm" class="panel"><div class="zone"></div><div class="co"></div><canvas width="196" height="196"></canvas></div>`);
-    const slots = SPELLS.map((s, k) => `<div class="slot" data-spell="${s.id}"><span class="k">${k + 1}</span>${spellIcons[s.icon]}<span class="c">${s.mana}</span><div class="cd"></div><div class="lk">niv. ${s.level}</div><span class="rk"></span>
+    const slots = SPELLS.map((s, k) => `<div class="slot" data-spell="${s.id}"><span class="k">${k + 1}</span>${spellIcon(s.id)}<span class="c">${s.mana}</span><div class="cd"></div><div class="lk">niv. ${s.level}</div><span class="rk"></span>
       <div class="tt panel"></div></div>`).join('')
-      + `<div class="slot" data-item="potPV"><span class="k">7</span>${spellIcons.potionPV}<span class="q"></span><div class="cd"></div><div class="tt panel"><b>Potion de soin</b><br>Rend 40 % des PV.</div></div>`
-      + `<div class="slot" data-item="potMP"><span class="k">8</span>${spellIcons.potionMana}<span class="q"></span><div class="cd"></div><div class="tt panel"><b>Potion de mana</b><br>Rend 40 % du mana.</div></div>`
-      + `<div class="slot"><span class="k">9</span>${spellIcons.lock}<div class="tt panel"><b>Emplacement libre</b><br><span class="m">Prévu pour un sort de métier.</span></div></div>`;
+      + `<div class="slot" data-item="potPV"><span class="k">7</span>${itemIcon('potPV')}<span class="q"></span><div class="cd"></div><div class="tt panel"><b>Potion de soin</b><br>Rend 40 % des PV.</div></div>`
+      + `<div class="slot" data-item="potMP"><span class="k">8</span>${itemIcon('potMP')}<span class="q"></span><div class="cd"></div><div class="tt panel"><b>Potion de mana</b><br>Rend 40 % du mana.</div></div>`
+      + `<div class="slot"><span class="k">9</span>${verrou}<div class="tt panel"><b>Emplacement libre</b><br><span class="m">Prévu pour un sort de métier.</span></div></div>`;
     add(`<div id="bar" class="panel"><div class="xp"><i></i><span></span></div><div class="slots">${slots}</div>
       <div class="hint"><kbd>Z</kbd><kbd>Q</kbd><kbd>S</kbd><kbd>D</kbd> ou flèches · tir automatique · <kbd>Tab</kbd> cibler · <kbd>1</kbd>–<kbd>8</kbd> sorts et potions · <kbd>Espace</kbd> bond · <kbd>E</kbd> récolter</div></div>`);
     add(`<div id="chat" class="panel"><div class="tabs"><b>Général</b><span>Carte</span><span>Commerce</span><span>Groupe</span></div><div class="log"></div><input maxlength="160" placeholder="Entrée pour écrire…"></div>`);
@@ -83,7 +82,7 @@ export class Hud {
       <div id="inv" class="win panel"><div class="hd"><span class="title">Personnage</span><div class="tabs2"><span class="tab on" data-tab="sac">Sac</span><span class="tab" data-tab="atelier">Atelier</span></div><span class="x">✕</span></div><div class="body"></div></div>
       <div id="equip" class="win panel"><div class="hd"><span class="title">Équipement</span><span class="x">✕</span></div><div class="body"></div></div>
       <div id="spells" class="win panel"><div class="hd"><span class="title">Grimoire · Voie de l’Arc</span><span class="pts"></span><span class="x">✕</span></div><div class="body"></div></div>
-      <div id="wmap" class="win panel"><canvas width="${WM.W}" height="${WM.H}"></canvas><div class="side panel"></div><div class="tipw panel"></div><span class="x" style="position:absolute;right:20px;top:20px;z-index:2">✕</span></div>
+      <div id="wmap" class="win panel"></div>
       <div id="help" class="win panel"><div class="hd"><span class="title">Comment jouer</span><span class="x">✕</span></div><div class="body">
         <p><kbd>Z</kbd><kbd>Q</kbd><kbd>S</kbd><kbd>D</kbd> ou les flèches pour marcher (<kbd>W</kbd><kbd>A</kbd> marchent aussi).</p>
         <p>L’arc tire tout seul sur l’ennemi le plus proche à portée. <kbd>Tab</kbd> ou un clic change de cible.</p>
@@ -106,6 +105,7 @@ export class Hud {
       const k = b.dataset.menu;
       if (k === 'equip') this.toggleEquip(); else if (k === 'sorts') this.toggleSpells(); else if (k === 'sac') this.toggleInv('sac'); else if (k === 'forge') this.toggleInv('atelier'); else if (k === 'carte') this.toggleMap(); else this.toggle('#help');
     }));
+    this.carte = new FenetreCarte($('#wmap'));
     document.querySelectorAll<HTMLElement>('.win .x').forEach(x => x.addEventListener('click', () => (x.closest('.win') as HTMLElement).style.display = 'none'));
     document.querySelectorAll<HTMLElement>('#inv .tab').forEach(t => t.addEventListener('click', () => { this.tab = t.dataset.tab as 'sac'; this.renderInv(); }));
     const input = $<HTMLInputElement>('#chat input');
@@ -321,9 +321,9 @@ export class Hud {
     const bindTips = () => this.bindTips(body);
     if (this.tab === 'sac') {
       const items = Object.entries(s.inv).filter(([, q]) => q > 0);
-      const cells = items.map(([id, q]) => `<div class="cell ${RARITY[ITEMS[id]?.rarity ?? 'commun']}" data-tip="${id}" data-id="${id}">${icon(ITEMS[id]?.icon ?? 'lock')}<em>${q}</em></div>`).join('')
+      const cells = items.map(([id, q]) => `<div class="cell ${RARITY[ITEMS[id]?.rarity ?? 'commun']}" data-tip="${id}" data-id="${id}">${itemIcon(id)}<em>${q}</em></div>`).join('')
         + Array.from({ length: Math.max(0, 40 - items.length) }, () => '<div class="cell" style="cursor:default"></div>').join('');
-      const worn = SLOTS.map(([k, l]) => { const id = s.equip[k]; return `<div class="ing" ${id ? `data-tip="${id}"` : ''}>${id ? icon(ITEMS[id].icon) : spellIcons.lock}${l}<span style="margin-left:auto;color:${id ? 'var(--ink)' : 'var(--mute)'}">${id ? ITEMS[id].name : 'vide'}</span></div>`; }).join('');
+      const worn = SLOTS.map(([k, l]) => { const id = s.equip[k]; return `<div class="ing" ${id ? `data-tip="${id}"` : ''}>${id ? itemIcon(id) : verrou}${l}<span style="margin-left:auto;color:${id ? 'var(--ink)' : 'var(--mute)'}">${id ? ITEMS[id].name : 'vide'}</span></div>`; }).join('');
       body.innerHTML = `<div><div class="sec">PORTÉ</div>${worn}<div class="btn" id="toEquip">Ouvrir l’équipement (C)</div>
         <div class="sec" style="margin-top:16px">BOURSE</div><div class="stats"><div><span>Écus</span><b>${nb(s.ecus)}</b></div><div><span>Objets</span><b>${items.length} / 40</b></div></div>
         <p style="color:var(--mute);font-size:13px;margin-top:12px">Clic sur une pièce d’équipement pour la porter, sur une potion pour la boire.</p></div>
@@ -336,8 +336,8 @@ export class Hud {
     } else {
       const rc = RECIPES.find(r => r.id === this.recipe)!;
       const can = (r: typeof rc) => s.level >= r.level && s.ecus >= r.cost && Object.entries(r.needs).every(([k, q]) => (s.inv[k] ?? 0) >= q);
-      const list = RECIPES.map(r => `<div class="re ${r.id === this.recipe ? 'on' : ''} ${can(r) ? 'ok' : ''} ${s.level < r.level ? 'lock' : ''}" data-r="${r.id}" data-tip="${r.out}">${icon(ITEMS[r.out].icon)}<div>${ITEMS[r.out].name}${r.qty > 1 ? ` ×${r.qty}` : ''}<small>niv. ${r.level} · ${ITEMS[r.out].kind}${r.cost ? ` · ${r.cost} écus` : ''}</small></div></div>`).join('');
-      const ings = Object.entries(rc.needs).map(([k, q]) => { const have = s.inv[k] ?? 0; return `<div class="ing" data-tip="${k}">${icon(ITEMS[k].icon)}${ITEMS[k].name}<span class="${have >= q ? 'ok' : 'ko'}">${have} / ${q}</span></div>`; }).join('');
+      const list = RECIPES.map(r => `<div class="re ${r.id === this.recipe ? 'on' : ''} ${can(r) ? 'ok' : ''} ${s.level < r.level ? 'lock' : ''}" data-r="${r.id}" data-tip="${r.out}">${itemIcon(r.out)}<div>${ITEMS[r.out].name}${r.qty > 1 ? ` ×${r.qty}` : ''}<small>niv. ${r.level} · ${ITEMS[r.out].kind}${r.cost ? ` · ${r.cost} écus` : ''}</small></div></div>`).join('');
+      const ings = Object.entries(rc.needs).map(([k, q]) => { const have = s.inv[k] ?? 0; return `<div class="ing" data-tip="${k}">${itemIcon(k)}${ITEMS[k].name}<span class="${have >= q ? 'ok' : 'ko'}">${have} / ${q}</span></div>`; }).join('');
       const miss = s.level < rc.level ? `Recette du niveau ${rc.level}.` : Object.entries(rc.needs).filter(([k, q]) => (s.inv[k] ?? 0) < q).map(([k, q]) => `il manque ${q - (s.inv[k] ?? 0)} × ${ITEMS[k].name}`).join(', ') || (s.ecus < rc.cost ? 'Pas assez d’écus.' : '');
       const out = ITEMS[rc.out], bon = bonusText(rc.out);
       body.innerHTML = `<div><div class="sec">RECETTES</div><div class="rl">${list}</div></div>
@@ -383,12 +383,12 @@ export class Hud {
     const body = $('#equip .body');
     const slot = ([k, l]: [Slot, string]) => {
       const id = s.equip[k];
-      return `<div class="es ${id ? 'on ' + RARITY[ITEMS[id].rarity] : ''}" data-slot="${k}" ${id ? `data-tip="${id}" data-worn="1"` : ''}>${id ? icon(ITEMS[id].icon) : '<span class="vide">vide</span>'}<span>${l}</span></div>`;
+      return `<div class="es ${id ? 'on ' + RARITY[ITEMS[id].rarity] : ''}" data-slot="${k}" ${id ? `data-tip="${id}" data-worn="1"` : ''}>${id ? itemIcon(id) : '<span class="vide">vide</span>'}<span>${l}</span></div>`;
     };
     const wearable = Object.entries(s.inv).filter(([id, q]) => q > 0 && ITEMS[id]?.slot);
     const rows = wearable.map(([id]) => {
       const d = ITEMS[id], cur = s.equip[d.slot!];
-      return `<div class="re ok" data-id="${id}" data-tip="${id}">${icon(d.icon)}<div>${d.name}<small>${SLOTS.find(x => x[0] === d.slot)![1]} · ${bonusText(id)}</small><small class="cmp">${diffText(id, cur) || 'identique'}</small></div><span class="eqb">Équiper</span></div>`;
+      return `<div class="re ok" data-id="${id}" data-tip="${id}">${itemIcon(id)}<div>${d.name}<small>${SLOTS.find(x => x[0] === d.slot)![1]} · ${bonusText(id)}</small><small class="cmp">${diffText(id, cur) || 'identique'}</small></div><span class="eqb">Équiper</span></div>`;
     }).join('') || '<p style="color:var(--mute)">Aucune pièce d’équipement dans le sac. Fabrique-en à l’atelier (F) avec les ressources récoltées et le butin des monstres.</p>';
     body.innerHTML = `<div class="doll"><div class="col">${slot(SLOTS[1])}${slot(SLOTS[2])}</div><div class="fig"></div><div class="col">${slot(SLOTS[0])}${slot(SLOTS[3])}</div></div>
       <div><div class="sec">CARACTÉRISTIQUES · NIVEAU ${s.level}</div><div class="stats">
@@ -417,7 +417,7 @@ export class Hud {
       const can = open && !max && s.points > 0 && s.level >= need;
       const why = !open ? `Se débloque au niveau ${sp.level}` : max ? 'Rang maximum' : s.level < need ? `Rang ${r + 1} au niveau ${need}` : !s.points ? 'Pas de point à dépenser' : `Passer au rang ${r + 1}`;
       const pips = Array.from({ length: MAX_RANK }, (_, i) => `<i class="${i < r && open ? 'on' : ''}"></i>`).join('');
-      return `<div class="sp ${open ? '' : 'lock'}"><div class="ic">${spellIcons[sp.icon]}<span class="k">${k + 1}</span></div>
+      return `<div class="sp ${open ? '' : 'lock'}"><div class="ic">${spellIcon(sp.id)}<span class="k">${k + 1}</span></div>
         <div class="tx"><div class="nm">${sp.name}<span class="pips">${pips}</span></div><div class="ds">${sp.desc}</div>
           <div class="now">${open ? `Rang ${r} : ${fxLines(sp.id, r).join(' · ')}` : `Rang 1 : ${fxLines(sp.id, 1).join(' · ')}`}</div>
           ${open && !max ? `<div class="nx">Rang ${r + 1} : ${fxLines(sp.id, r + 1).join(' · ')}</div>` : ''}</div>
@@ -430,28 +430,9 @@ export class Hud {
     $('#resetSp', body).addEventListener('click', e => !(e.currentTarget as HTMLElement).classList.contains('off') && this.act.resetSpells());
   }
 
+  carte!: FenetreCarte;
   toggleMap(here?: [number, number]) {
-    if (!this.toggle('#wmap')) return;
-    const w = $('#wmap'), cv = $<HTMLCanvasElement>('canvas', w);
-    const cur = here ?? this.here;
-    const open = Object.values(MAPS).map(m => m.coords);
-    const info = drawWorldMap(cv, cur, open);
-    const side = $('.side', w);
-    side.innerHTML = `<h1>Carte du monde</h1><div class="s">Terres d'Elnor · touche M · ${open.length} cartes ouvertes en V1</div>` +
-      info.zones.map((z: any) => `<div class="z ${z.disc ? '' : 'lock'}"><i style="background:${z.col}"></i>${z.name}<span>${z.lv.replace('niv. ', '')}${z.disc ? '' : ' · verrouillé'}</span></div>`).join('') +
-      `<div class="sec" style="margin-top:14px">CARTES OUVERTES</div>` +
-      Object.values(MAPS).map(m => `<div class="z"><i style="background:${m.ground === 'foret' ? '#6f9c48' : '#d7c76e'}"></i>${m.name}<span>${coords(m.coords)} · niv. ${m.levels}</span></div>`).join('');
-    const tipw = $<HTMLElement>('.tipw', w);
-    cv.onmousemove = e => {
-      const r = cv.getBoundingClientRect(), px = (e.clientX - r.left) * WM.W / r.width, py = (e.clientY - r.top) * WM.H / r.height;
-      const { cx, cy } = cellAt(px, py);
-      if (!info.land(cx, cy)) { tipw.style.display = 'none'; return; }
-      const z: any = info.zoneOf(cx, cy), m = Object.values(MAPS).find(q => q.coords[0] === cx && q.coords[1] === cy);
-      tipw.innerHTML = m ? `<b>${m.name}</b><br>Carte ${coords(m.coords)} · niv. ${m.levels}<br><span style="color:var(--mute)">${m.mobs.map(g => MOBS[g.kind].name).filter((v, i, a) => a.indexOf(v) === i).join(', ')}</span>` : `<b>${z.name}</b><br>Carte ${coords([cx, cy])} · ${z.lv}<br><span style="color:var(--mute)">${z.disc ? 'Pas encore ouverte' : 'Région verrouillée'}</span>`;
-      tipw.style.left = `${e.clientX - w.getBoundingClientRect().left + 16}px`; tipw.style.top = `${e.clientY - w.getBoundingClientRect().top + 16}px`;
-      tipw.style.display = 'block';
-    };
-    cv.onmouseleave = () => tipw.style.display = 'none';
+    if (this.toggle('#wmap')) this.carte.ouvrir(here ?? this.here);
   }
   here: [number, number] = [4, -1];
 }

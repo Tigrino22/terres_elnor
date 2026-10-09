@@ -4,7 +4,10 @@ import * as THREE from 'three';
 import { MapData, T } from '../shared/mapgen';
 import { rng, makeNoise } from '../shared/rng';
 import type { EntSnap } from '../shared/protocol';
-import { MAT, bushGeo, glowSprite, lootModel, mobModel, nodeModel, pineGeo, playerModel, portalModel, rockGeo, trapModel, treeGeo, Builder } from './models';
+import {
+  ARBRE_VARIANTES, AUTO_SHOT, BUTIN_HALO, MAT, MOB_ART, NODE_ART, SAPIN_VARIANTES, SOL, arbreGeo, arrowGeo, buissonGeo, butinModel,
+  glowSprite, grotteModel, mobModel, nodeModel, playerModel, portalModel, rocherGeo, sapinGeo, trapModel,
+} from './assets';
 
 export interface View {
   id: number;
@@ -21,7 +24,12 @@ export interface View {
   dying: number;
   ring?: THREE.Mesh;
   extra?: THREE.Object3D;
+  /** équipement affiché, pour reconstruire le modèle quand il change */
+  look?: string;
 }
+
+const mobScale = (kind?: string) => MOB_ART[kind ?? '']?.scale ?? 1;
+const lookOf = (e: EntSnap) => `${e.s}|${e.eq ? Object.entries(e.eq).sort().join(',') : ''}`;
 
 interface Fx { t: number; dur: number; obj: THREE.Object3D; update: (k: number, dt: number) => void }
 
@@ -58,7 +66,7 @@ export class World3D {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.05;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.scene.background = new THREE.Color(0x1d2416);
+    this.scene.background = new THREE.Color(SOL.ciel);
     this.camera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.1, 200);
     this.scene.add(new THREE.HemisphereLight(0xd8ecff, 0x4a3d24, 1.15));
     this.sun = new THREE.DirectionalLight(0xffe8c4, 2.6);
@@ -88,7 +96,7 @@ export class World3D {
     for (const v of this.views.values()) this.scene.remove(v.obj);
     this.views.clear();
     this.fx.forEach(f => this.fxGroup.remove(f.obj)); this.fx = [];
-    this.mapGroup.traverse(o => { if ((o as THREE.Mesh).geometry && o.userData.own) (o as THREE.Mesh).geometry.dispose(); });
+    this.mapGroup.traverse(o => { if ((o as THREE.Mesh).geometry && o.userData.own && !o.userData.shared) (o as THREE.Mesh).geometry.dispose(); });
     this.mapGroup.clear();
     this.portals = [];
     this.caveAt = null;
@@ -99,7 +107,7 @@ export class World3D {
     const nearWater = (i: number, j: number) => { for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) if (tileAt(i + a, j + b) === T.Eau) return true; return false; };
     this.heightAt = (x, z) => { const i = Math.round(x), j = Math.round(z); return i < 0 || j < 0 || i >= N || j >= N ? 0 : Math.max(0, top[idx(i, j)]); };
 
-    const base = new THREE.Mesh(new THREE.PlaneGeometry(N * 3, N * 3), new THREE.MeshStandardMaterial({ color: 0x33421f, roughness: 1 }));
+    const base = new THREE.Mesh(new THREE.PlaneGeometry(N * 3, N * 3), new THREE.MeshStandardMaterial({ color: SOL.socle, roughness: 1 }));
     base.rotation.x = -Math.PI / 2; base.position.set(N / 2, -0.16, N / 2); base.receiveShadow = true;
     this.own(base);
 
@@ -108,8 +116,9 @@ export class World3D {
     slabs.receiveShadow = true; cols.receiveShadow = true; cols.castShadow = true;
     const m4 = new THREE.Matrix4(), c = new THREE.Color();
     const forest = m.def.ground === 'foret';
-    const grassA = new THREE.Color(forest ? 0x76a046 : 0x8cae4e), grassB = new THREE.Color(forest ? 0x4f7a30 : 0x6e9438);
-    const dirt = new THREE.Color(0xb39465), sand = new THREE.Color(0xc4b07a), mud = new THREE.Color(0x4a4630), rock = new THREE.Color(0x837767);
+    const herbe = forest ? SOL.herbeForet : SOL.herbe;
+    const grassA = new THREE.Color(herbe[0]), grassB = new THREE.Color(herbe[1]);
+    const dirt = new THREE.Color(SOL.chemin), sand = new THREE.Color(SOL.sable), mud = new THREE.Color(SOL.vase), rock = new THREE.Color(SOL.roche);
     let k = 0, ci = 0;
     for (let j = 0; j < N; j++) for (let i = 0; i < N; i++, k++) {
       const t = m.tile[k], n = noise(i * 0.18, j * 0.18);
@@ -133,7 +142,7 @@ export class World3D {
     // eau
     const water = Array.from({ length: N * N }, (_, q) => q).filter(q => m.tile[q] === T.Eau);
     if (water.length) {
-      const wm = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshStandardMaterial({ color: 0x3f86a8, roughness: 0.12, metalness: 0.15, transparent: true, opacity: 0.86 }), water.length);
+      const wm = new THREE.InstancedMesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshStandardMaterial({ color: SOL.eau, roughness: 0.12, metalness: 0.15, transparent: true, opacity: 0.86 }), water.length);
       water.forEach((q, n) => { m4.compose(new THREE.Vector3(q % N, -0.09, Math.floor(q / N)), new THREE.Quaternion().setFromEuler(new THREE.Euler(-Math.PI / 2, 0, 0)), new THREE.Vector3(1, 1, 1)); wm.setMatrixAt(n, m4); });
       wm.receiveShadow = true;
       this.own(wm);
@@ -143,7 +152,7 @@ export class World3D {
     const tufts = new THREE.InstancedMesh(new THREE.ConeGeometry(0.03, 0.15, 3), new THREE.MeshStandardMaterial({ flatShading: true, roughness: 1 }), N * N * 4);
     const flowers = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(0.035, 0), new THREE.MeshStandardMaterial({ roughness: 0.6 }), N * N);
     let ti = 0, fi = 0;
-    const fc = [0xf4f0e0, 0xf2d14b, 0xb486e0, 0xe86a6a];
+    const fc = SOL.fleurs;
     const q = new THREE.Quaternion(), e = new THREE.Euler(), v = new THREE.Vector3(), s3 = new THREE.Vector3();
     for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
       const t = m.tile[idx(i, j)];
@@ -154,7 +163,7 @@ export class World3D {
         v.set(i + (r() - 0.5) * 0.9, h + 0.08 * s, j + (r() - 0.5) * 0.9);
         q.setFromEuler(e.set((r() - 0.5) * 0.5, r() * 3, (r() - 0.5) * 0.5));
         m4.compose(v, q, s3.set(s, s, s)); tufts.setMatrixAt(ti, m4);
-        tufts.setColorAt(ti, c.set(forest ? 0x5a8a32 : 0x6e9a3a).offsetHSL((r() - 0.5) * 0.04, 0, (r() - 0.2) * 0.1)); ti++;
+        tufts.setColorAt(ti, c.set(forest ? SOL.touffesForet : SOL.touffes).offsetHSL((r() - 0.5) * 0.04, 0, (r() - 0.2) * 0.1)); ti++;
       }
       if (r() < (forest ? 0.18 : 0.3)) {
         m4.makeTranslation(i + (r() - 0.5) * 0.8, h + 0.1, j + (r() - 0.5) * 0.8);
@@ -188,10 +197,10 @@ export class World3D {
     // décor instancié : un appel de dessin par variante
     const groups = new Map<string, { geo: () => THREE.BufferGeometry; list: typeof m.decor }>();
     for (const d of [...m.decor, ...ring]) {
-      const variant = d.kind === 'arbre' ? Math.floor(d.v * 3) : d.kind === 'sapin' ? Math.floor(d.v * 2) : 0;
+      const variant = d.kind === 'arbre' ? Math.floor(d.v * ARBRE_VARIANTES) : d.kind === 'sapin' ? Math.floor(d.v * SAPIN_VARIANTES) : 0;
       const key = d.kind + variant;
       if (!groups.has(key)) groups.set(key, {
-        geo: () => d.kind === 'arbre' ? treeGeo(variant) : d.kind === 'sapin' ? pineGeo(variant) : d.kind === 'buisson' ? bushGeo() : rockGeo(), list: [],
+        geo: () => d.kind === 'arbre' ? arbreGeo(variant) : d.kind === 'sapin' ? sapinGeo(variant) : d.kind === 'buisson' ? buissonGeo() : rocherGeo(), list: [],
       });
       groups.get(key)!.list.push(d);
     }
@@ -202,7 +211,7 @@ export class World3D {
         m4.compose(v.set(d.x, this.heightAt(d.x, d.z), d.z), q.setFromEuler(e.set(0, d.rot, 0)), s3.set(s, s, s));
         im.setMatrixAt(n, m4);
       });
-      im.castShadow = true; im.receiveShadow = true;
+      im.castShadow = true; im.receiveShadow = true; im.userData.shared = true;
       this.own(im);
     }
 
@@ -210,25 +219,15 @@ export class World3D {
     for (let j = 1; j < N - 1; j++) for (let i = 1; i < N - 1; i++) {
       if (m.tile[idx(i, j)] === T.Falaise || m.tile[idx(i, j)] === T.Eau) continue;
       if (m.tile[idx(i, j - 1)] === T.Falaise && r() < 0.35) {
-        const rm = new THREE.Mesh(rockGeo(), MAT); rm.position.set(i + (r() - 0.5) * 0.4, 0, j - 0.3); rm.rotation.y = r() * 6; rm.castShadow = true; this.own(rm);
+        const rm = new THREE.Mesh(rocherGeo(), MAT); rm.position.set(i + (r() - 0.5) * 0.4, 0, j - 0.3); rm.rotation.y = r() * 6; rm.castShadow = true; rm.userData.shared = true; this.own(rm);
       }
     }
 
     // grotte
     if (m.cave) {
-      const b = new Builder();
-      b.add(new THREE.CylinderGeometry(0.62, 0.62, 0.3, 16, 1, false, 0, Math.PI), 0x0c0a08, 0, 0.62, 0, { rot: [Math.PI / 2, 0, Math.PI / 2] });
-      b.add(new THREE.BoxGeometry(1.24, 0.62, 0.3), 0x0c0a08, 0, 0.31, 0);
-      for (const sx of [-1, 1]) {
-        b.add(new THREE.BoxGeometry(0.22, 1.2, 0.36), 0x5a4a3a, sx * 0.72, 0.6, 0.02);
-        b.add(new THREE.CylinderGeometry(0.03, 0.03, 0.4, 5), 0x4a3020, sx * 0.95, 0.9, 0.2);
-        b.add(new THREE.IcosahedronGeometry(0.07, 0), 0xffb040, sx * 0.95, 1.12, 0.2, { emissive: true });
-      }
-      b.add(new THREE.BoxGeometry(1.7, 0.2, 0.4), 0x5a4a3a, 0, 1.22, 0.02);
-      const cave = new THREE.Mesh(b.bake(), MAT);
-      cave.position.set(m.cave.i, 0, m.cave.j - 0.35); cave.castShadow = true;
-      this.own(cave);
-      for (const sx of [-1, 1]) { const gl = glowSprite(0xffa040, 0.9, 0.6); gl.position.set(m.cave.i + sx * 0.95, 1.12, m.cave.j - 0.15); this.mapGroup.add(gl); }
+      const cave = grotteModel();
+      cave.position.set(m.cave.i, 0, m.cave.j - 0.35);
+      this.mapGroup.add(cave);
       this.caveAt = new THREE.Vector3(m.cave.i, 1.5, m.cave.j);
     }
 
@@ -262,6 +261,7 @@ export class World3D {
       if (e.id === this.selfId && self) { v.tx = self.x; v.tz = self.z; }
       else { v.tx = e.x; v.tz = e.z; }
       if (e.f !== undefined && e.id !== this.selfId) v.tf = e.f;
+      if (e.k === 'p' && v.look !== lookOf(e)) this.redress(v, e);
       if (e.k === 'n') v.body.scale.setScalar((e.fl ?? 0) & 16 ? 0.45 : 1);
       if (v.extra) v.extra.visible = !!((e.fl ?? 0) & 2);
     }
@@ -272,21 +272,29 @@ export class World3D {
     const obj = new THREE.Group();
     let body: THREE.Object3D;
     let extra: THREE.Object3D | undefined;
-    if (e.k === 'p') body = playerModel((e.s as 'elfe' | 'humain') ?? 'elfe');
+    if (e.k === 'p') body = playerModel((e.s as 'elfe' | 'humain') ?? 'elfe', e.eq);
     else if (e.k === 'm') {
       body = mobModel(e.s ?? 'loup');
       extra = trapModel(); extra.visible = false; extra.scale.setScalar(0.8); obj.add(extra);
-    } else if (e.k === 'l') {
-      const g = new THREE.Group(); g.add(lootModel()); const gl = glowSprite(0xffd36a, 1.1, 0.55); gl.position.y = 0.2; g.add(gl); body = g;
-    } else body = nodeModel(e.s ?? 'frene');
+    } else if (e.k === 'l') body = butinModel();
+    else body = nodeModel(e.s ?? 'frene');
     obj.add(body);
     if (e.k === 'n' || e.k === 'l') {
-      const mark = glowSprite(e.k === 'l' ? 0xffe9a8 : e.s === 'lunaire' ? 0x7fd0ff : e.s === 'cuivre' ? 0xff9a50 : 0xd8ff90, e.k === 'l' ? 0.6 : 1.2, 0.35);
-      mark.position.y = e.s === 'frene' ? 1.2 : 0.35; obj.add(mark);
+      const art = e.k === 'n' ? NODE_ART[(e.s ?? 'frene') as keyof typeof NODE_ART] : null;
+      const mark = glowSprite(art ? art.glow : BUTIN_HALO, art ? 1.2 : 0.6, 0.35);
+      mark.position.y = art ? art.glowY : 0.35; obj.add(mark);
     }
     obj.position.set(e.x, this.heightAt(e.x, e.z), e.z);
     this.scene.add(obj);
-    return { id: e.id, k: e.k, s: e.s, obj, body, x: e.x, z: e.z, tx: e.x, tz: e.z, f: e.f ?? 0, tf: e.f ?? 0, snap: e, walk: 0, hit: 0, lunge: 0, dying: 0, extra };
+    return { id: e.id, k: e.k, s: e.s, obj, body, x: e.x, z: e.z, tx: e.x, tz: e.z, f: e.f ?? 0, tf: e.f ?? 0, snap: e, walk: 0, hit: 0, lunge: 0, dying: 0, extra, look: e.k === 'p' ? lookOf(e) : undefined };
+  }
+
+  /** Le joueur a changé d'équipement : on remplace son modèle, rien d'autre ne bouge. */
+  private redress(v: View, e: EntSnap) {
+    const body = playerModel((e.s as 'elfe' | 'humain') ?? 'elfe', e.eq);
+    body.position.copy(v.body.position); body.rotation.copy(v.body.rotation); body.scale.copy(v.body.scale);
+    v.obj.remove(v.body); v.obj.add(body);
+    v.body = body; v.look = lookOf(e);
   }
 
   setSelfFacing(f: number) { const v = this.views.get(this.selfId); if (v) v.tf = f; }
@@ -299,16 +307,12 @@ export class World3D {
 
   posOf(id: number, y = 0.8) {
     const v = this.views.get(id);
-    return v ? new THREE.Vector3(v.x, this.heightAt(v.x, v.z) + y * (v.s === 'alpha' ? 1.3 : 1), v.z) : null;
+    return v ? new THREE.Vector3(v.x, this.heightAt(v.x, v.z) + y * (v.k === 'm' ? mobScale(v.s) ** 0.7 : 1), v.z) : null;
   }
 
-  arrow(from: THREE.Vector3, to: THREE.Vector3, speed: number, color = 0xb8ffb0, big = false) {
+  arrow(from: THREE.Vector3, to: THREE.Vector3, speed = AUTO_SHOT.speed, color = AUTO_SHOT.color, big = AUTO_SHOT.big) {
     const g = new THREE.Group();
-    const b = new Builder();
-    b.add(new THREE.CylinderGeometry(0.012, 0.012, 0.46, 4), 0xe9dcb8);
-    b.add(new THREE.ConeGeometry(0.035, 0.09, 4), 0xd0d4d8, 0, 0.26, 0);
-    b.add(new THREE.BoxGeometry(0.06, 0.08, 0.005), 0xf0f0f0, 0, -0.2, 0);
-    const shaft = new THREE.Mesh(b.bake(), MAT); shaft.userData.own = true;
+    const shaft = new THREE.Mesh(arrowGeo(), MAT); shaft.userData.shared = true;
     g.add(shaft);
     const trail = new THREE.Mesh(new THREE.CylinderGeometry(big ? 0.06 : 0.035, 0.002, big ? 1.8 : 1.1, 6, 1, true), new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false }));
     trail.position.y = big ? -1.0 : -0.65; g.add(trail);
@@ -339,7 +343,7 @@ export class World3D {
     this.addFx(g, dur, k => { inner.scale.setScalar(Math.max(0.01, r * k)); (edge.material as THREE.MeshBasicMaterial).opacity = 0.6 + 0.4 * Math.sin(k * 30); });
   }
 
-  rain(x: number, z: number, r: number) {
+  rain(x: number, z: number, r: number, color: number) {
     const rr = rng(Math.floor(x * 100 + z));
     for (let w = 0; w < 3; w++) for (let n = 0; n < 7; n++) {
       const a = rr() * Math.PI * 2, d = Math.sqrt(rr()) * r;
@@ -347,9 +351,9 @@ export class World3D {
       const delay = w * 0.5 + rr() * 0.2;
       const to = new THREE.Vector3(tx, this.heightAt(tx, tz), tz);
       const from = to.clone().add(new THREE.Vector3(-1.5, 6, -1.5));
-      setTimeout(() => this.arrow(from, to, 22, 0x9fe8ff), delay * 1000);
+      setTimeout(() => this.arrow(from, to, 22, color), delay * 1000);
     }
-    this.ringFx(x, z, r, 0x9fe8ff, 1.6, false);
+    this.ringFx(x, z, r, color, 1.6, false);
   }
 
   levelUp(id: number) {
@@ -395,7 +399,7 @@ export class World3D {
       v.lunge = Math.max(0, v.lunge - dt * 3);
       v.body.position.y = bob;
       v.body.position.z = Math.sin(v.lunge * Math.PI) * 0.3;
-      const base = v.s === 'alpha' ? 1.45 : 1;
+      const base = v.k === 'm' ? mobScale(v.s) : 1;
       if (v.k === 'p' || v.k === 'm') v.body.scale.set(base * (1 + v.hit * 0.12), base * (1 - v.hit * 0.1), base * (1 + v.hit * 0.12));
       if (v.k === 'l') { v.body.rotation.y = t * 1.5; v.body.position.y = 0.05 + Math.sin(t * 3) * 0.05; }
       if (v.k === 'p' && (v.snap.fl ?? 0) & 1) { v.body.rotation.z = 1.3; v.body.position.y = 0.1; } else if (v.k === 'p') v.body.rotation.z = 0;
@@ -406,7 +410,7 @@ export class World3D {
     if (me) this.selfRing.position.set(me.x, this.heightAt(me.x, me.z) + 0.04, me.z);
     const tg = this.targetId != null ? this.views.get(this.targetId) : undefined;
     this.targetRing.visible = !!tg && !tg.dying;
-    if (tg) { const s = tg.s === 'alpha' ? 1.6 : 1; this.targetRing.scale.set(s, s, s); this.targetRing.position.set(tg.x, this.heightAt(tg.x, tg.z) + 0.05, tg.z); this.targetRing.rotation.z = t; }
+    if (tg) { const s = tg.k === 'm' && mobScale(tg.s) > 1 ? 1.6 : 1; this.targetRing.scale.set(s, s, s); this.targetRing.position.set(tg.x, this.heightAt(tg.x, tg.z) + 0.05, tg.z); this.targetRing.rotation.z = t; }
 
     this.portals.forEach(p => p.update(t));
     this.fx = this.fx.filter(f => {
@@ -415,7 +419,7 @@ export class World3D {
       f.update(k, dt);
       if (k >= 1) {
         this.fxGroup.remove(f.obj);
-        f.obj.traverse(o => { const m = o as THREE.Mesh; if (m.geometry && !(o instanceof THREE.Sprite)) m.geometry.dispose(); });
+        f.obj.traverse(o => { const m = o as THREE.Mesh; if (m.geometry && !(o instanceof THREE.Sprite) && !o.userData.shared) m.geometry.dispose(); });
         return false;
       }
       return true;
@@ -442,7 +446,7 @@ export class World3D {
     let best: View | null = null, bd = 46;
     for (const v of this.views.values()) {
       if (v.dying || !kinds.includes(v.k) || v.id === this.selfId) continue;
-      const tall = v.s === 'alpha' ? 0.8 : v.k === 'n' && v.s === 'frene' ? 0.8 : 0.4;
+      const tall = (v.k === 'm' && mobScale(v.s) > 1) || (v.k === 'n' && v.s === 'frene') ? 0.8 : 0.4;
       const p = this.project(v.x, this.heightAt(v.x, v.z) + tall, v.z);
       const d = Math.hypot(p.x - sx, p.y - sy);
       if (d < bd) { bd = d; best = v; }

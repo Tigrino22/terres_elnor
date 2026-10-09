@@ -39,6 +39,8 @@ export interface EntSnap {
   /** drapeaux : 1 mort, 2 immobilisé, 4 marqué, 8 en combat, 16 ressource épuisée */
   fl?: number;
   tg?: number;
+  /** p : équipement porté, pour dessiner les pièces sur le personnage */
+  eq?: Partial<Record<Slot, string>>;
 }
 
 export interface SelfState {
