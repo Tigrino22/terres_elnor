@@ -1,0 +1,27 @@
+{
+  "name": "terres-elnor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MMORPG navigateur isométrique, PvM temps réel",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch --clear-screen=false src/server/main.ts",
+    "build": "vite build",
+    "start": "NODE_ENV=production tsx src/server/main.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "three": "0.169.0",
+    "ws": "^8.18.0",
+    "tsx": "^4.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/three": "0.169.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.9.3",
+    "vite": "^6.4.0",
+    "vitest": "^3.2.0"
+  }
+}

@@ -1,0 +1,77 @@
+// Messages échangés entre le navigateur et le serveur (JSON sur WebSocket).
+
+import type { SpellId, Slot } from './data';
+
+export type Race = 'elfe' | 'humain';
+
+export type ClientMsg =
+  | { t: 'join'; name: string; race: Race }
+  | { t: 'input'; seq: number; mx: number; mz: number }
+  | { t: 'target'; id: number | null }
+  | { t: 'cast'; spell: SpellId; mx?: number; mz?: number }
+  | { t: 'use'; item: 'potPV' | 'potMP' }
+  | { t: 'harvest'; id: number }
+  | { t: 'craft'; recipe: string }
+  | { t: 'equip'; item: string }
+  | { t: 'chat'; text: string };
+
+/** Entité visible sur la carte, envoyée 20 fois par seconde. */
+export interface EntSnap {
+  id: number;
+  k: 'p' | 'm' | 'l' | 'n';
+  x: number;
+  z: number;
+  /** p : race · m : type de monstre · n : type de ressource */
+  s?: string;
+  name?: string;
+  lv?: number;
+  hp?: number;
+  mhp?: number;
+  /** direction regardée (radians) */
+  f?: number;
+  /** drapeaux : 1 mort, 2 immobilisé, 4 marqué, 8 en combat, 16 ressource épuisée */
+  fl?: number;
+  tg?: number;
+}
+
+export interface SelfState {
+  id: number;
+  name: string;
+  race: Race;
+  level: number;
+  xp: number;
+  xpNext: number;
+  hp: number; mhp: number;
+  sh: number; msh: number;
+  mp: number; mmp: number;
+  ecus: number;
+  dmg: [number, number];
+  crit: number;
+  speed: number;
+  cds: Partial<Record<SpellId | 'potPV' | 'potMP', number>>;
+  inv: Record<string, number>;
+  equip: Partial<Record<Slot, string>>;
+  target: number | null;
+  harvesting: { id: number; t: number; total: number } | null;
+  dead: number;
+}
+
+export type GameEvent =
+  | { e: 'shot'; from: number; to: number; spell?: SpellId; tx?: number; tz?: number }
+  | { e: 'dmg'; id: number; n: number; crit?: boolean; heal?: boolean; shield?: boolean }
+  | { e: 'die'; id: number }
+  | { e: 'tele'; x: number; z: number; r: number; dur: number }
+  | { e: 'aoe'; x: number; z: number; r: number; kind: 'pluie' | 'piege' | 'ruee' }
+  | { e: 'trap'; id: number; x: number; z: number; on: boolean }
+  | { e: 'dash'; id: number; x0: number; z0: number; x1: number; z1: number }
+  | { e: 'levelup'; id: number; level: number }
+  | { e: 'loot'; item: string; n: number }
+  | { e: 'msg'; text: string; c?: 'm' | 'g' | 's' | 'w' | 'n' };
+
+export type ServerMsg =
+  | { t: 'welcome'; you: number }
+  | { t: 'map'; map: string; x: number; z: number }
+  | { t: 'snap'; tick: number; ack: number; ents: EntSnap[] }
+  | { t: 'self'; s: SelfState }
+  | { t: 'ev'; ev: GameEvent[] }
+  | { t: 'chat'; from: string; text: string };
