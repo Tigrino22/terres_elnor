@@ -37,6 +37,7 @@ const hud = new Hud({
   upgrade: spell => net?.send({ t: 'upgrade', spell }),
   resetSpells: () => net?.send({ t: 'resetSpells' }),
   chat: text => net?.send({ t: 'chat', text }),
+  ami: (name, add) => net?.send({ t: 'ami', name, add }),
 });
 
 // ------------------------------------------------------------------ entrées
@@ -98,6 +99,7 @@ addEventListener('keydown', e => {
   else if (k === 'i') hud.toggleInv('sac');
   else if (k === 'f') hud.toggleInv('atelier');
   else if (k === 'm') hud.toggleMap();
+  else if (k === 'o') hud.toggleAmis();
   else if (k === 'h') hud.toggle('#help');
   keys.add(k);
   if (k.startsWith('arrow')) e.preventDefault();
@@ -155,6 +157,7 @@ function onMessage(m: ServerMsg) {
     }
     case 'ev': m.ev.forEach(onEvent); break;
     case 'chat': hud.chatLine(m.from, m.text); break;
+    case 'social': hud.setSocial(m.online, m.amis); break;
   }
 }
 

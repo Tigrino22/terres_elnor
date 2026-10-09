@@ -21,7 +21,7 @@ function reachable(id: string) {
 }
 
 function setup() {
-  const g = new Game(42);
+  const g = new Game(42, 'route');
   const inbox: ServerMsg[] = [];
   const p = g.join({ send: m => inbox.push(m) }, 'Lyraël', 'elfe');
   return { g, p, inbox };
@@ -111,7 +111,7 @@ describe('simulation', () => {
   });
 
   it('la ruée de l’alpha est annoncée puis frappe la zone', () => {
-    const g = new Game(3);
+    const g = new Game(3, 'route');
     const inbox: ServerMsg[] = [];
     const p = g.join({ send: m => inbox.push(m) }, 'Borin', 'humain');
     const lis = g.maps.get('lisiere')!;

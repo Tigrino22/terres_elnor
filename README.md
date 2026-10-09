@@ -16,6 +16,17 @@ npm run build      # client dans dist/
 npm start          # sert dist/ et le jeu sur le port 8080 (variable PORT)
 ```
 
+### Jouer à plusieurs par internet
+
+Le jeu en réseau passe par ce serveur : il suffit de l'héberger sur une machine joignable depuis internet et de donner son adresse. Tous ceux qui l'ouvrent jouent dans le même monde, avec leur compte. Le `Dockerfile` construit une image prête à lancer (port 8080, sauvegardes dans `/data`, à monter sur un volume persistant) :
+
+```bash
+docker build -t terres-elnor .
+docker run -p 8080:8080 -v elnor-data:/data terres-elnor
+```
+
+Derrière un hébergeur en HTTPS, le client passe tout seul en `wss://`. La version publiée comme simple page (sans serveur) reste une partie solo.
+
 Les comptes et les personnages sont enregistrés dans `data/comptes.json` (dossier modifiable avec la variable `DATA_DIR`). Les mots de passe sont hachés avec scrypt, jamais stockés en clair.
 
 Sans serveur joignable (page statique), le client fait tourner le monde dans le navigateur : partie solo, avec les comptes et la sauvegarde gardés dans le navigateur (localStorage, mots de passe hachés avec PBKDF2).
@@ -27,7 +38,9 @@ npm run typecheck
 
 ## Ce qui marche
 
-- Trois cartes reliées par des portails : Route de Valcourt (4, −1), Bois de Fenrel (4, −2), Lisière de Fenrel (5, −2). Deux portails « bientôt » montrent la suite du monde.
+- Quatre cartes reliées par des portails : Halte de Valcourt (4, 0), Route de Valcourt (4, −1), Bois de Fenrel (4, −2), Lisière de Fenrel (5, −2). Des portails « bientôt » montrent la suite du monde.
+- Carte de départ commune, la Halte de Valcourt : sans monstres, un campement et son feu au centre. Tous les nouveaux personnages y apparaissent, pour se retrouver facilement.
+- Fenêtre Social (touche O) : joueurs connectés et amis, avec race, voie, niveau et carte où ils se trouvent. On ajoute un ami connecté par son nom ; la liste d'amis est sauvegardée avec le personnage.
 - Portails très visibles : arche de pierre, colonne de lumière, cercle de runes, flèche et nom de la destination.
 - Déplacement ZQSD, WASD ou flèches, prédiction côté client et correction par le serveur.
 - Tir automatique, ciblage Tab ou clic, 6 sorts de la Voie de l'Arc débloqués avec les niveaux, 2 potions.

@@ -7,6 +7,7 @@ import type { EntSnap, SelfState } from '../shared/protocol';
 import { MAX_RANK, fxLines, rankLevel, rankOf, spellFx } from '../shared/ranks';
 import { itemIcon, spellIcon, verrou } from './assets';
 import { FenetreCarte } from './carte-monde/fenetre';
+import { FenetreAmis } from './social/amis';
 
 const $ = <E extends HTMLElement = HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector(sel) as E;
 const nb = (n: number) => Math.round(n).toLocaleString('fr-FR');
@@ -33,6 +34,7 @@ const MENU_ICONS: Record<string, string> = {
   carte: '<svg viewBox="0 0 24 24" fill="#e8d6a8"><path d="M3 5l6-2 6 2 6-2v16l-6 2-6-2-6 2z" opacity=".9"/><path d="M9 3v16M15 5v16" stroke="#3a2c1c" stroke-width="1.4"/></svg>',
   equip: '<svg viewBox="0 0 24 24" fill="#e8d6a8"><path d="M12 2l8 3v6c0 5-3.4 9.4-8 11-4.6-1.6-8-6-8-11V5z"/><path d="M12 6v12M7 10h10" stroke="#3a2c1c" stroke-width="1.8"/></svg>',
   sorts: '<svg viewBox="0 0 24 24" fill="#e8d6a8"><path d="M4 4h7a2 2 0 0 1 2 2v15a2 2 0 0 0-2-2H4zM20 4h-5a2 2 0 0 0-2 2v15a2 2 0 0 1 2-2h5z"/><path d="M16.5 8l.8 1.7 1.7.3-1.3 1.2.4 1.8-1.6-.9-1.6.9.4-1.8-1.3-1.2 1.7-.3z" fill="#3a2c1c"/></svg>',
+  amis: '<svg viewBox="0 0 24 24" fill="#e8d6a8"><circle cx="9" cy="8" r="3.6"/><path d="M2 20c0-4 3.2-6.6 7-6.6s7 2.6 7 6.6z"/><circle cx="17" cy="9" r="2.8" opacity=".75"/><path d="M15.5 13.6c3.6-.4 6.5 1.8 6.5 5.4h-4.6c0-2-.7-3.9-1.9-5.4z" opacity=".75"/></svg>',
   aide: '<svg viewBox="0 0 24 24" fill="#e8d6a8"><circle cx="12" cy="12" r="10" opacity=".9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.5V14" stroke="#3a2c1c" stroke-width="2" fill="none"/><circle cx="12" cy="17.5" r="1.2" fill="#3a2c1c"/></svg>',
 };
 
@@ -45,6 +47,7 @@ export interface HudActions {
   upgrade(id: SpellId): void;
   resetSpells(): void;
   chat(text: string): void;
+  ami(name: string, add: boolean): void;
 }
 
 export class Hud {
@@ -76,13 +79,14 @@ export class Hud {
       <div class="hint"><kbd>Z</kbd><kbd>Q</kbd><kbd>S</kbd><kbd>D</kbd> ou flèches · tir automatique · <kbd>Tab</kbd> cibler · <kbd>1</kbd>–<kbd>8</kbd> sorts et potions · <kbd>Espace</kbd> bond · <kbd>E</kbd> récolter</div></div>`);
     add(`<div id="chat" class="panel"><div class="tabs"><b>Général</b><span>Carte</span><span>Commerce</span><span>Groupe</span></div><div class="log"></div><input maxlength="160" placeholder="Entrée pour écrire…"></div>`);
     add(`<div id="gold" class="panel"><div class="coin"></div><span>0 écus</span></div>`);
-    add(`<div id="menu" class="panel">${[['equip', 'Équip.', 'C'], ['sorts', 'Sorts', 'K'], ['sac', 'Sac', 'I'], ['forge', 'Atelier', 'F'], ['carte', 'Carte', 'M'], ['aide', 'Aide', 'H']].map(([k, l, key]) => `<div class="mb" data-menu="${k}"><kbd>${key}</kbd>${MENU_ICONS[k]}${l}${k === 'sorts' ? '<em class="pts"></em>' : ''}</div>`).join('')}</div>`);
+    add(`<div id="menu" class="panel">${[['equip', 'Équip.', 'C'], ['sorts', 'Sorts', 'K'], ['sac', 'Sac', 'I'], ['forge', 'Atelier', 'F'], ['carte', 'Carte', 'M'], ['amis', 'Amis', 'O'], ['aide', 'Aide', 'H']].map(([k, l, key]) => `<div class="mb" data-menu="${k}"><kbd>${key}</kbd>${MENU_ICONS[k]}${l}${k === 'sorts' || k === 'amis' ? `<em class="pts${k === 'amis' ? ' on' : ''}"></em>` : ''}</div>`).join('')}</div>`);
     add(`<div id="cast" class="panel"><div class="lbl"></div><div class="bar"><i></i></div></div>`);
     document.body.insertAdjacentHTML('beforeend', `<div id="dead"><h2>Tu es tombé</h2><p></p></div><div id="banner"><h2></h2><p></p></div><div id="fade"></div>
       <div id="inv" class="win panel"><div class="hd"><span class="title">Personnage</span><div class="tabs2"><span class="tab on" data-tab="sac">Sac</span><span class="tab" data-tab="atelier">Atelier</span></div><span class="x">✕</span></div><div class="body"></div></div>
       <div id="equip" class="win panel"><div class="hd"><span class="title">Équipement</span><span class="x">✕</span></div><div class="body"></div></div>
       <div id="spells" class="win panel"><div class="hd"><span class="title">Grimoire · Voie de l’Arc</span><span class="pts"></span><span class="x">✕</span></div><div class="body"></div></div>
       <div id="wmap" class="win panel"></div>
+      <div id="amis" class="win panel"></div>
       <div id="help" class="win panel"><div class="hd"><span class="title">Comment jouer</span><span class="x">✕</span></div><div class="body">
         <p><kbd>Z</kbd><kbd>Q</kbd><kbd>S</kbd><kbd>D</kbd> ou les flèches pour marcher (<kbd>W</kbd><kbd>A</kbd> marchent aussi).</p>
         <p>L’arc tire tout seul sur l’ennemi le plus proche à portée. <kbd>Tab</kbd> ou un clic change de cible.</p>
@@ -92,7 +96,7 @@ export class Hud {
         <p>Les arches lumineuses au bord de la carte sont des portails : marche dedans pour changer de carte.</p>
         <p><kbd>E</kbd> ou un clic près d’un frêne, d’un filon ou d’une fleur pour récolter. Le butin se ramasse en marchant dessus.</p>
         <p>Chaque niveau gagné donne un point de sort : <kbd>K</kbd> ouvre le grimoire pour monter tes sorts jusqu’au rang 5.</p>
-        <p><kbd>C</kbd> équipement, <kbd>I</kbd> sac, <kbd>F</kbd> atelier, <kbd>M</kbd> carte du monde, <kbd>Entrée</kbd> chat.</p></div></div>
+        <p><kbd>C</kbd> équipement, <kbd>I</kbd> sac, <kbd>F</kbd> atelier, <kbd>M</kbd> carte du monde, <kbd>O</kbd> amis et joueurs connectés, <kbd>Entrée</kbd> chat.</p></div></div>
       <div class="itip panel"></div>`);
 
     this.ui.querySelectorAll<HTMLElement>('.slot').forEach(s => s.addEventListener('mousedown', e => {
@@ -103,9 +107,10 @@ export class Hud {
     this.ui.querySelectorAll<HTMLElement>('.mb').forEach(b => b.addEventListener('mousedown', e => {
       e.stopPropagation();
       const k = b.dataset.menu;
-      if (k === 'equip') this.toggleEquip(); else if (k === 'sorts') this.toggleSpells(); else if (k === 'sac') this.toggleInv('sac'); else if (k === 'forge') this.toggleInv('atelier'); else if (k === 'carte') this.toggleMap(); else this.toggle('#help');
+      if (k === 'equip') this.toggleEquip(); else if (k === 'sorts') this.toggleSpells(); else if (k === 'sac') this.toggleInv('sac'); else if (k === 'forge') this.toggleInv('atelier'); else if (k === 'carte') this.toggleMap(); else if (k === 'amis') this.toggleAmis(); else this.toggle('#help');
     }));
     this.carte = new FenetreCarte($('#wmap'));
+    this.amis = new FenetreAmis($('#amis'), (name, add) => this.act.ami(name, add));
     document.querySelectorAll<HTMLElement>('.win .x').forEach(x => x.addEventListener('click', () => (x.closest('.win') as HTMLElement).style.display = 'none'));
     document.querySelectorAll<HTMLElement>('#inv .tab').forEach(t => t.addEventListener('click', () => { this.tab = t.dataset.tab as 'sac'; this.renderInv(); }));
     const input = $<HTMLInputElement>('#chat input');
@@ -134,6 +139,7 @@ export class Hud {
   setPortrait(src: HTMLCanvasElement) { const c = $<HTMLCanvasElement>('#unit canvas'); c.getContext('2d')!.drawImage(src, 0, 0, 96, 96); }
 
   updateSelf(s: SelfState) {
+    this.amis.moi = s.name;
     const prev = this.self;
     this.self = s;
     const u = $('#unit');
@@ -431,6 +437,14 @@ export class Hud {
   }
 
   carte!: FenetreCarte;
+  amis!: FenetreAmis;
+  toggleAmis() { if (this.toggle('#amis')) this.amis.rendre(); }
+  /** Liste des connectés et des amis reçue du serveur ; le badge du menu compte les connectés. */
+  setSocial(online: import('../shared/protocol').JoueurInfo[], amis: import('../shared/protocol').JoueurInfo[]) {
+    this.amis.maj(online, amis);
+    const b = $<HTMLElement>('#menu [data-menu="amis"] .pts');
+    b.textContent = String(online.length); b.style.display = online.length > 1 ? 'flex' : 'none';
+  }
   toggleMap(here?: [number, number]) {
     if (this.toggle('#wmap')) this.carte.ouvrir(here ?? this.here);
   }

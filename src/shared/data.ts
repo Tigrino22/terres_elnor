@@ -112,6 +112,8 @@ export interface MapDef {
   pond?: [number, number, number];
   cliff?: number;
   cave?: { i: number; j: number; label: string };
+  /** carte sûre : aucun monstre, un campement au centre où tout le monde se retrouve */
+  camp?: boolean;
   portals: PortalDef[];
   mobs: MobGroup[];
   nodes: NodeDef[];
@@ -124,11 +126,20 @@ export const NODES = {
 } as const;
 
 export const MAPS: Record<string, MapDef> = {
+  halte: {
+    id: 'halte', name: 'Halte de Valcourt', zone: "Plaines d'Aldmar", coords: [4, 0], levels: '1', seed: 3, size: 22, ground: 'plaine', camp: true,
+    portals: [
+      { edge: 'N', at: 11, to: 'route', label: 'Route de Valcourt (4, −1)' },
+      { edge: 'W', at: 11, to: null, label: 'Valcourt (3, 0) · bientôt' },
+    ],
+    mobs: [],
+    nodes: [{ kind: 'frene', i: 4, j: 6 }, { kind: 'lunaire', i: 17, j: 16 }, { kind: 'lunaire', i: 5, j: 16 }],
+  },
   route: {
     id: 'route', name: 'Route de Valcourt', zone: "Plaines d'Aldmar", coords: [4, -1], levels: '1 à 5', seed: 7, size: 26, ground: 'plaine',
     portals: [
       { edge: 'N', at: 13, to: 'bois', label: 'Bois de Fenrel (4, −2)' },
-      { edge: 'S', at: 12, to: null, label: 'Chemin de Valcourt (4, 0) · bientôt' },
+      { edge: 'S', at: 12, to: 'halte', label: 'Halte de Valcourt (4, 0)' },
       { edge: 'W', at: 14, to: null, label: 'Côte des Brumes (3, −1) · bientôt' },
     ],
     mobs: [
@@ -169,4 +180,5 @@ export const MAPS: Record<string, MapDef> = {
   },
 };
 
-export const START_MAP = 'route';
+/** Carte où apparaissent les nouveaux personnages : tout le monde commence au même endroit. */
+export const START_MAP = 'halte';

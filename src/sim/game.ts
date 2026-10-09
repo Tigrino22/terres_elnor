@@ -6,7 +6,7 @@ import { generateMap, moveWithCollision, nearestFree, MapData } from '../shared/
 import { rng, randInt, Rng } from '../shared/rng';
 import { AUTO_EVERY, AUTO_RANGE, DT, MAX_LEVEL, computeStats, xpFactor, xpNext, Stats } from '../shared/stats';
 import { MAX_RANK, Ranks, pointsLeft, rankLevel, rankOf, spellFx, spentPoints } from '../shared/ranks';
-import type { ClientMsg, EntSnap, GameEvent, Race, SaveData, SelfState, ServerMsg } from '../shared/protocol';
+import type { AmiSave, ClientMsg, EntSnap, GameEvent, JoueurInfo, Race, SaveData, SelfState, ServerMsg } from '../shared/protocol';
 
 export interface Client { send(msg: ServerMsg): void }
 
@@ -14,6 +14,13 @@ export interface Client { send(msg: ServerMsg): void }
 export const AUTOSAVE_EVERY = 30;
 
 type Cd = SpellId | 'potPV' | 'potMP';
+
+/** Seule voie jouable pour l'instant ; sera un choix à la création quand les autres voies arriveront. */
+export const VOIE = 'Voie de l’Arc';
+export const MAX_AMIS = 50;
+/** Rafraîchissement de la liste des joueurs connectés, en secondes. */
+const SOCIAL_EVERY = 2;
+const memeNom = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 export class Player {
   x = 0; z = 0; f = 0;
@@ -23,6 +30,8 @@ export class Player {
   inv: Record<string, number> = { potPV: 3, potMP: 2 };
   equip: Partial<Record<Slot, string>> = {};
   ranks: Ranks = {};
+  amis: AmiSave[] = [];
+  lastSocial = '';
   /** appelé avec l'état du personnage à chaque sauvegarde */
   persist: ((s: SaveData) => void) | null = null;
   cds: Partial<Record<Cd, number>> = {};
@@ -50,7 +59,7 @@ export class Player {
     return {
       v: 1, map: this.mapId, x: r2(this.x), z: r2(this.z), level: this.level, xp: this.xp, ecus: this.ecus,
       hp: this.dead ? this.stats.mhp : Math.round(this.hp), mp: Math.round(this.mp),
-      inv: { ...this.inv }, equip: { ...this.equip }, ranks: { ...this.ranks },
+      inv: { ...this.inv }, equip: { ...this.equip }, ranks: { ...this.ranks }, amis: this.amis.map(a => ({ ...a })),
     };
   }
   /** Relit une sauvegarde en ignorant tout ce qui n'existe plus dans les données du jeu. */
@@ -69,6 +78,11 @@ export class Player {
       if (r > 1 && this.level >= rankLevel(sp.id, r)) this.ranks[sp.id] = r;
     }
     if (spentPoints(this.ranks) > this.level - 1) this.ranks = {};
+    this.amis = [];
+    for (const a of Array.isArray(s.amis) ? s.amis.slice(0, MAX_AMIS) : []) {
+      const name = String(a?.name ?? '').slice(0, 16);
+      if (name && !this.amis.some(b => memeNom(b.name, name))) this.amis.push({ name, race: a.race === 'humain' ? 'humain' : 'elfe', level: int(a.level, 1, MAX_LEVEL, 1) });
+    }
     this.refreshStats();
     this.hp = int(s.hp, 1, this.stats.mhp, this.stats.mhp);
     this.mp = int(s.mp, 0, this.stats.mmp, this.stats.mmp);
@@ -132,7 +146,8 @@ export class Game {
   private nextId = 1;
   r: Rng;
 
-  constructor(seed = 1) {
+  /** `start` : carte des nouveaux personnages (START_MAP en jeu ; les tests en choisissent une autre). */
+  constructor(seed = 1, public start = START_MAP) {
     this.r = rng(seed);
     for (const id of Object.keys(MAPS)) this.maps.set(id, new MapInstance(this, id));
   }
@@ -143,7 +158,7 @@ export class Game {
   join(client: Client, name: string, race: Race, save?: SaveData | null, persist?: (s: SaveData) => void): Player {
     const clean = (name || '').replace(/[^\p{L}\p{N} '-]/gu, '').trim().slice(0, 16) || 'Voyageur';
     const back = !!save && !!this.maps.get(save.map);
-    const p = new Player(this.newId(), clean, race === 'humain' ? 'humain' : 'elfe', client, back ? save!.map : START_MAP);
+    const p = new Player(this.newId(), clean, race === 'humain' ? 'humain' : 'elfe', client, back ? save!.map : this.start);
     if (save) p.restore(save);
     p.persist = persist ?? null;
     this.players.set(p.id, p);
@@ -163,6 +178,8 @@ export class Game {
       p.msg('ZQSD ou flèches pour bouger, l’arc tire tout seul. Sorts 1 à 6, potions 7 et 8.', 's');
     }
     this.broadcastChat('', `${p.name} arrive sur ${m.data.def.name}.`);
+    for (const q of this.players.values()) if (q !== p && q.amis.some(a => memeNom(a.name, p.name))) q.msg(`Ton ami ${p.name} vient de se connecter.`, 'g');
+    this.socialDirty = true;
     this.save(p);
     return p;
   }
@@ -176,6 +193,55 @@ export class Game {
     this.maps.get(p.mapId)?.players.delete(p);
     this.players.delete(p.id);
     for (const m of this.maps.values()) for (const mob of m.mobs) if (mob.target === p.id) { mob.target = null; mob.state = 'return'; }
+    // ses amis gardent son dernier niveau pour l'afficher hors ligne
+    for (const q of this.players.values()) for (const a of q.amis) if (memeNom(a.name, p.name)) { a.level = p.level; a.race = p.race; }
+    this.socialDirty = true;
+  }
+
+  // ------------------------------------------------------------------ amis et joueurs connectés
+  socialDirty = true;
+
+  private info(p: Player): JoueurInfo {
+    const d = MAPS[p.mapId];
+    return { name: p.name, race: p.race, voie: VOIE, level: p.level, online: true, map: d.name, coords: d.coords };
+  }
+
+  /** Envoie à chacun la liste des connectés et de ses amis, seulement si elle a changé. */
+  private sendSocial() {
+    const online = [...this.players.values()].map(p => this.info(p)).sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+    for (const p of this.players.values()) {
+      const amis = p.amis.map(a => {
+        const on = online.find(o => memeNom(o.name, a.name));
+        if (on) { a.race = on.race; a.level = on.level; a.name = on.name; return on; }
+        return { name: a.name, race: a.race, voie: VOIE, level: a.level, online: false };
+      }).sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name, 'fr'));
+      const json = JSON.stringify([online, amis]);
+      if (json === p.lastSocial) continue;
+      p.lastSocial = json;
+      p.client.send({ t: 'social', online, amis });
+    }
+  }
+
+  private ami(p: Player, nom: string, add: boolean) {
+    const name = String(nom ?? '').trim().slice(0, 16);
+    if (!name) return;
+    if (!add) {
+      const before = p.amis.length;
+      p.amis = p.amis.filter(a => !memeNom(a.name, name));
+      if (p.amis.length < before) p.msg(`${name} n’est plus dans tes amis.`, 's');
+    } else {
+      const q = [...this.players.values()].find(o => memeNom(o.name, name));
+      if (!q) { p.msg(`Aucun personnage connecté ne s’appelle « ${name} ».`, 'w'); return; }
+      if (q === p) { p.msg('Tu ne peux pas t’ajouter toi-même.', 'w'); return; }
+      if (p.amis.some(a => memeNom(a.name, q.name))) { p.msg(`${q.name} est déjà dans tes amis.`, 'w'); return; }
+      if (p.amis.length >= MAX_AMIS) { p.msg(`Pas plus de ${MAX_AMIS} amis.`, 'w'); return; }
+      p.amis.push({ name: q.name, race: q.race, level: q.level });
+      p.msg(`${q.name} est maintenant dans tes amis.`, 'g');
+      q.msg(`${p.name} t’a ajouté à ses amis.`, 's');
+    }
+    p.lastSocial = '';
+    this.socialDirty = true;
+    this.save(p);
   }
 
   broadcastChat(from: string, text: string) {
@@ -214,6 +280,7 @@ export class Game {
       case 'unequip': this.unequip(p, msg.slot); break;
       case 'upgrade': this.upgrade(p, msg.spell); break;
       case 'resetSpells': this.resetSpells(p); break;
+      case 'ami': this.ami(p, msg.name, !!msg.add); break;
       case 'chat': {
         const text = String(msg.text || '').slice(0, 160).trim();
         if (text) this.broadcastChat(p.name, text);
@@ -228,6 +295,7 @@ export class Game {
     this.tickN++;
     for (const m of this.maps.values()) this.tickMap(m);
     for (const m of this.maps.values()) this.broadcast(m);
+    if (this.socialDirty || this.tickN % Math.round(SOCIAL_EVERY / DT) === 0) { this.socialDirty = false; this.sendSocial(); }
     if (this.tickN % Math.round(AUTOSAVE_EVERY / DT) === 0) this.saveAll();
   }
 

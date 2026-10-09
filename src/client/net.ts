@@ -16,7 +16,7 @@ export function wsUrl() {
   return `${proto}//${location.host}/ws`;
 }
 
-export function connectWs(url = wsUrl(), timeout = 2500): Promise<Transport> {
+export function connectWs(url = wsUrl(), timeout = 6000): Promise<Transport> {
   return new Promise((resolve, reject) => {
     let ws: WebSocket;
     try { ws = new WebSocket(url); } catch (e) { reject(e); return; }

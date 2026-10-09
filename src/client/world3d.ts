@@ -5,6 +5,7 @@ import { MapData, T } from '../shared/mapgen';
 import { rng, makeNoise } from '../shared/rng';
 import type { EntSnap } from '../shared/protocol';
 import {
+  feuDeCampModel, tenteModel,
   ARBRE_VARIANTES, AUTO_SHOT, BUTIN_HALO, MAT, MOB_ART, NODE_ART, SAPIN_VARIANTES, SOL, arbreGeo, arrowGeo, buissonGeo, butinModel,
   glowSprite, grotteModel, mobModel, nodeModel, playerModel, portalModel, rocherGeo, sapinGeo, trapModel,
 } from './assets';
@@ -229,6 +230,18 @@ export class World3D {
       cave.position.set(m.cave.i, 0, m.cave.j - 0.35);
       this.mapGroup.add(cave);
       this.caveAt = new THREE.Vector3(m.cave.i, 1.5, m.cave.j);
+    }
+
+    // campement de la carte de départ
+    if (m.camp) {
+      const feu = feuDeCampModel();
+      feu.position.set(m.camp.i, 0, m.camp.j);
+      this.mapGroup.add(feu);
+      m.camp.tentes.forEach((t, k) => {
+        const tente = tenteModel([0xc9a86a, 0xa8b0c0, 0xb89a70][k % 3]);
+        tente.position.set(t.i, 0, t.j); tente.rotation.y = t.rot;
+        this.mapGroup.add(tente);
+      });
     }
 
     // portails

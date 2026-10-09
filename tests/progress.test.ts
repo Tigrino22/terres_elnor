@@ -11,7 +11,7 @@ const PW = 'abcdefgh', PW2 = PW.toUpperCase(), BAD = PW.slice(1) + 'z';
 const fakeHasher: Hasher = { salt: () => 'sel', hash: async (pw, salt) => `${salt}:${pw.split('').reverse().join('')}` };
 
 function setup(save?: SaveData | null) {
-  const g = new Game(42);
+  const g = new Game(42, 'route');
   const inbox: ServerMsg[] = [];
   const saves: SaveData[] = [];
   const p = g.join({ send: m => inbox.push(m) }, 'Lyraël', 'elfe', save, s => saves.push(s));

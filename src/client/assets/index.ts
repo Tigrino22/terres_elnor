@@ -99,6 +99,7 @@ export function nodeModel(kind: string) {
 export { trapModel } from './sorts/piege';
 export { butinModel, BUTIN_HALO } from './decor/butin';
 export { grotteModel } from './decor/grotte';
+export { feuDeCampModel, tenteModel } from './decor/campement';
 export { portalModel } from './decor/portail';
 export { arbreGeo, ARBRE_VARIANTES } from './decor/arbre';
 export { sapinGeo, SAPIN_VARIANTES } from './decor/sapin';
