@@ -16,7 +16,9 @@ npm run build      # client dans dist/
 npm start          # sert dist/ et le jeu sur le port 8080 (variable PORT)
 ```
 
-Sans serveur joignable (page statique), le client fait tourner le monde dans le navigateur : partie solo.
+Les comptes et les personnages sont enregistrés dans `data/comptes.json` (dossier modifiable avec la variable `DATA_DIR`). Les mots de passe sont hachés avec scrypt, jamais stockés en clair.
+
+Sans serveur joignable (page statique), le client fait tourner le monde dans le navigateur : partie solo, avec les comptes et la sauvegarde gardés dans le navigateur (localStorage, mots de passe hachés avec PBKDF2).
 
 ```bash
 npm test           # tests de la simulation
@@ -34,14 +36,18 @@ npm run typecheck
 - Butin à ramasser, récolte (frêne, cuivre, lunaire), atelier avec 8 recettes, équipement qui change les stats.
 - Multijoueur : chaque joueur voit les autres sur sa carte, chat global.
 - Minicarte, carte du monde façon parchemin (M), sac et atelier (I, F), aide (H).
+- Page de connexion : création de compte (identifiant, mot de passe, nom du personnage, peuple) ou connexion. Un compte ne peut être connecté qu'une fois : une nouvelle connexion ferme l'ancienne.
+- Sauvegarde automatique toutes les 30 s, à chaque changement de carte, montée de niveau, fabrication, point de sort et à la déconnexion. On reprend sur la même carte, au même endroit, avec son niveau, son XP, ses écus, son sac, son équipement et ses sorts.
+- Fenêtre d'équipement (C) : silhouette du personnage, 4 emplacements, caractéristiques, pièces du sac comparées à celles portées ; clic pour équiper ou retirer.
+- Grimoire (K) : un point de sort par niveau gagné, chaque sort monte du rang 1 au rang 5 (un rang tous les 3 niveaux après son déblocage), avec plus de dégâts, une zone plus large, une immobilisation ou une marque plus longue, un bond plus long. Les points peuvent être réinitialisés.
 
 ## Organisation
 
 | Dossier | Rôle |
 |---|---|
 | `src/shared` | Données de jeu (`data.ts`), génération des cartes, collisions, formules, protocole |
-| `src/sim` | Simulation autoritaire du monde, sans dépendance navigateur ni Node |
-| `src/server` | Serveur HTTP + WebSocket, boucle à 20 ticks par seconde |
+| `src/sim` | Simulation autoritaire du monde et comptes, sans dépendance navigateur ni Node |
+| `src/server` | Serveur HTTP + WebSocket, boucle à 20 ticks par seconde, stockage des comptes |
 | `src/client` | Rendu Three.js low-poly, interface HTML, entrées, réseau |
 | `tests` | Tests Vitest de la simulation |
 
@@ -51,6 +57,6 @@ L'équilibrage (monstres, sorts, objets, recettes, cartes) est entièrement dans
 
 ## Prochaines étapes proposées
 
-- Sauvegarde des personnages (PostgreSQL) et comptes.
+- Passer le stockage des comptes sur PostgreSQL quand il y aura beaucoup de joueurs.
 - Voies de la Lame et de l'Arcane, nains jouables.
 - Ville de Valcourt (marchands, banque), plus de cartes, premier donjon.

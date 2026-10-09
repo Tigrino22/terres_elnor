@@ -33,6 +33,9 @@ const hud = new Hud({
   use: item => { net?.send({ t: 'use', item }); hud.flashSlot(item); },
   craft: recipe => net?.send({ t: 'craft', recipe }),
   equip: item => net?.send({ t: 'equip', item }),
+  unequip: slot => net?.send({ t: 'unequip', slot }),
+  upgrade: spell => net?.send({ t: 'upgrade', spell }),
+  resetSpells: () => net?.send({ t: 'resetSpells' }),
   chat: text => net?.send({ t: 'chat', text }),
 });
 
@@ -90,6 +93,8 @@ addEventListener('keydown', e => {
   }
   if (e.code === 'Space') { e.preventDefault(); castSpell('vent'); return; }
   if (k === 'e') harvestNearest();
+  else if (k === 'c') hud.toggleEquip();
+  else if (k === 'k') hud.toggleSpells();
   else if (k === 'i') hud.toggleInv('sac');
   else if (k === 'f') hud.toggleInv('atelier');
   else if (k === 'm') hud.toggleMap();
@@ -117,6 +122,11 @@ canvas.addEventListener('mousemove', e => { canvas.style.cursor = net && world.p
 // ------------------------------------------------------------------ messages du serveur
 function onMessage(m: ServerMsg) {
   switch (m.t) {
+    case 'auth':
+      if (m.ok) net = conn;
+      authWait?.(m); authWait = null;
+      break;
+    case 'kicked': net = null; lost('Session fermée', m.reason); break;
     case 'welcome': selfId = m.you; world.selfId = m.you; break;
     case 'map': enterMap(m.map, m.x, m.z); break;
     case 'snap': {
@@ -136,10 +146,11 @@ function onMessage(m: ServerMsg) {
     }
     case 'self': {
       const lvl = self?.level;
+      if (!self) renderPortraits(m.s.race);
       self = m.s;
       world.targetId = m.s.target;
       hud.updateSelf(m.s);
-      if (lvl && m.s.level > lvl) hud.banner(`Niveau ${m.s.level}`, 'PV, bouclier, mana et dégâts augmentent');
+      if (lvl && m.s.level > lvl) hud.banner(`Niveau ${m.s.level}`, 'PV, bouclier, mana et dégâts augmentent · +1 point de sort (K)');
       break;
     }
     case 'ev': m.ev.forEach(onEvent); break;
@@ -296,60 +307,121 @@ function drawLabels() {
   hud.endLabels();
 }
 
-// ------------------------------------------------------------------ portrait
-function renderPortrait(race: Race) {
-  const rt = new THREE.WebGLRenderTarget(96, 96, { samples: 4 });
+// ------------------------------------------------------------------ portrait et silhouette
+/** Rend le modèle du personnage hors écran (portrait du cadre, silhouette de l'équipement). */
+function renderModel(race: Race, w: number, h: number, fov: number, eye: [number, number, number], look: number) {
+  const rt = new THREE.WebGLRenderTarget(w, h, { samples: 4 });
   rt.texture.colorSpace = THREE.SRGBColorSpace;
   const sc = new THREE.Scene();
   sc.add(new THREE.HemisphereLight(0xd8ecff, 0x4a3d24, 1.4));
   const sun = new THREE.DirectionalLight(0xffe8c4, 2.4); sun.position.set(-1, 2, 2); sc.add(sun);
   const m = playerModel(race); m.rotation.y = 0.35; sc.add(m);
-  const cam = new THREE.PerspectiveCamera(26, 1, 0.1, 10); cam.position.set(0, 1.12, 0.95); cam.lookAt(0, 1.02, 0);
-  world.renderer.setRenderTarget(rt); world.renderer.render(sc, cam); world.renderer.setRenderTarget(null);
-  const px = new Uint8Array(96 * 96 * 4);
-  world.renderer.readRenderTargetPixels(rt, 0, 0, 96, 96, px);
-  const cv = document.createElement('canvas'); cv.width = cv.height = 96;
-  const c = cv.getContext('2d')!, img = c.createImageData(96, 96);
-  for (let y = 0; y < 96; y++) img.data.set(px.subarray((95 - y) * 384, (96 - y) * 384), y * 384);
+  const cam = new THREE.PerspectiveCamera(fov, w / h, 0.1, 20); cam.position.set(...eye); cam.lookAt(0, look, 0);
+  const clear = world.renderer.getClearAlpha();
+  world.renderer.setClearAlpha(0);
+  world.renderer.setRenderTarget(rt); world.renderer.clear(); world.renderer.render(sc, cam); world.renderer.setRenderTarget(null);
+  world.renderer.setClearAlpha(clear);
+  const px = new Uint8Array(w * h * 4);
+  world.renderer.readRenderTargetPixels(rt, 0, 0, w, h, px);
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const c = cv.getContext('2d')!, img = c.createImageData(w, h);
+  for (let y = 0; y < h; y++) img.data.set(px.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4);
   c.putImageData(img, 0, 0);
-  hud.setPortrait(cv);
   rt.dispose();
+  return cv;
 }
 
-// ------------------------------------------------------------------ accueil
-function login() {
-  document.body.insertAdjacentHTML('beforeend', `<div id="login"><div class="box panel">
+function renderPortraits(race: Race) {
+  hud.setPortrait(renderModel(race, 96, 96, 26, [0, 1.12, 0.95], 1.02));
+  hud.setDoll(renderModel(race, 150, 300, 30, [0, 0.75, 3.1], 0.66));
+}
+
+// ------------------------------------------------------------------ connexion
+const LAST = 'elnor.dernierCompte';
+let conn: Transport | null = null;
+let authWait: ((r: { ok: boolean; error?: string }) => void) | null = null;
+
+function lost(title: string, text: string) {
+  if (document.getElementById('lost')) return;
+  document.body.insertAdjacentHTML('beforeend', `<div id="lost"><div class="box panel"><h2>${title}</h2><p>${text}</p><div class="btn" id="relog">Revenir à la connexion</div></div></div>`);
+  document.getElementById('relog')!.addEventListener('click', () => location.reload());
+}
+
+async function login() {
+  let last = '';
+  try { last = localStorage.getItem(LAST) ?? ''; } catch { /* stockage indisponible */ }
+  document.body.insertAdjacentHTML('beforeend', `<div id="login" class="${last ? '' : 'register'}"><div class="box panel">
     <h1>Terres d'Elnor</h1><div class="s">Prototype jouable · V1 PvM</div>
-    <label>Nom du personnage</label><input id="lname" maxlength="16" placeholder="Lyraël">
-    <label>Peuple</label><div class="races">
-      <div class="race on" data-r="elfe"><b>Elfe de Sylvaë</b>Archère des forêts</div>
-      <div class="race" data-r="humain"><b>Humain d’Aldmar</b>Rôdeur des plaines</div></div>
-    <label>Voie</label><div class="races"><div class="race on" style="cursor:default"><b>Voie de l’Arc</b>Tir à distance, pièges</div><div class="race" style="opacity:.45;cursor:default"><b>Lame et Arcane</b>Prochain jalon</div></div>
-    <div class="btn" id="play" style="margin-top:18px">Entrer dans le monde</div><div class="st"></div></div></div>`);
+    <div class="tabs2 lt"><span class="tab ${last ? 'on' : ''}" data-m="login">Se connecter</span><span class="tab ${last ? '' : 'on'}" data-m="register">Créer un personnage</span></div>
+    <form autocomplete="on" onsubmit="return false">
+    <label>Identifiant du compte</label><input id="lacc" maxlength="20" autocomplete="username" placeholder="lyrael" value="${last.replace(/[^a-z0-9_.-]/g, '')}">
+    <label>Mot de passe</label><input id="lpass" type="password" maxlength="72" autocomplete="current-password" placeholder="6 caractères au minimum">
+    <div class="reg">
+      <label>Nom du personnage</label><input id="lname" maxlength="16" placeholder="Lyraël">
+      <label>Peuple</label><div class="races">
+        <div class="race on" data-r="elfe"><b>Elfe de Sylvaë</b>Archère des forêts</div>
+        <div class="race" data-r="humain"><b>Humain d’Aldmar</b>Rôdeur des plaines</div></div>
+      <label>Voie</label><div class="races"><div class="race on" style="cursor:default"><b>Voie de l’Arc</b>Tir à distance, pièges</div><div class="race" style="opacity:.45;cursor:default"><b>Lame et Arcane</b>Prochain jalon</div></div>
+    </div>
+    <button class="btn" id="play" type="submit" style="margin-top:18px;width:100%">Entrer dans le monde</button></form>
+    <div class="st"></div><div class="mode">Recherche du serveur…</div></div></div>`);
+  const box = document.getElementById('login')!;
+  const $l = <E extends HTMLElement>(sel: string) => box.querySelector(sel) as E;
+  let mode: 'login' | 'register' = last ? 'login' : 'register';
   let race: Race = 'elfe';
-  document.querySelectorAll<HTMLElement>('#login .race[data-r]').forEach(r => r.addEventListener('click', () => {
+  const play = $l<HTMLButtonElement>('#play'), st = $l<HTMLElement>('.st');
+  const setMode = (m: typeof mode) => {
+    mode = m;
+    box.classList.toggle('register', m === 'register');
+    box.querySelectorAll<HTMLElement>('.lt .tab').forEach(t => t.classList.toggle('on', t.dataset.m === m));
+    $l<HTMLInputElement>('#lpass').autocomplete = m === 'login' ? 'current-password' : 'new-password';
+    play.textContent = m === 'login' ? 'Entrer dans le monde' : 'Créer et entrer dans le monde';
+    st.textContent = ''; st.classList.remove('err');
+  };
+  setMode(mode);
+  box.querySelectorAll<HTMLElement>('.lt .tab').forEach(t => t.addEventListener('click', () => setMode(t.dataset.m as typeof mode)));
+  box.querySelectorAll<HTMLElement>('.race[data-r]').forEach(r => r.addEventListener('click', () => {
     race = r.dataset.r as Race;
-    document.querySelectorAll('#login .race[data-r]').forEach(o => o.classList.toggle('on', o === r));
+    box.querySelectorAll('.race[data-r]').forEach(o => o.classList.toggle('on', o === r));
   }));
-  const name = document.getElementById('lname') as HTMLInputElement;
-  const st = document.querySelector('#login .st') as HTMLElement;
-  name.focus();
-  const go = async () => {
-    st.textContent = 'Connexion…';
-    let t: Transport;
-    try { t = await connectWs(); st.textContent = ''; }
-    catch { t = await localGame(); hud.say('Pas de serveur joignable : partie solo dans le navigateur.', 's'); }
-    net = t;
+  box.querySelectorAll('input').forEach(i => i.addEventListener('keydown', e => e.stopPropagation()));
+  ($l<HTMLInputElement>(last ? '#lpass' : '#lacc')).focus();
+
+  // on cherche le serveur tout de suite : le joueur sait où vit son personnage avant de s'inscrire
+  const modeEl = $l<HTMLElement>('.mode');
+  const ready = connectWs().catch(() => localGame()).then(t => {
+    conn = t;
     t.onMessage = onMessage;
-    t.onClose = reason => { hud.say(reason + ' Recharge la page pour revenir.', 'w'); };
-    t.send({ t: 'join', name: name.value || 'Lyraël', race });
-    hud.say(t.online ? 'Connecté au serveur : les autres joueurs de la carte sont visibles.' : 'Mode solo.', 's');
-    renderPortrait(race);
-    document.getElementById('login')!.remove();
+    t.onClose = reason => {
+      if (authWait) { authWait({ ok: false, error: reason }); authWait = null; }
+      if (net) lost('Connexion perdue', `${reason} Ta progression est sauvegardée.`);
+    };
+    modeEl.innerHTML = t.online
+      ? '<b>Serveur en ligne</b> · personnage sauvegardé sur le serveur, les autres joueurs sont visibles'
+      : 'Pas de serveur joignable : <b>mode solo</b>, personnage sauvegardé dans ce navigateur';
+    return t;
+  });
+
+  const go = async () => {
+    if (play.disabled) return;
+    const account = $l<HTMLInputElement>('#lacc').value, password = $l<HTMLInputElement>('#lpass').value;
+    play.disabled = true; st.classList.remove('err');
+    st.textContent = mode === 'login' ? 'Connexion…' : 'Création du personnage…';
+    const t = await ready;
+    const res = await new Promise<{ ok: boolean; error?: string }>(resolve => {
+      authWait = resolve;
+      t.send(mode === 'login'
+        ? { t: 'auth', mode, account, password }
+        : { t: 'auth', mode, account, password, name: $l<HTMLInputElement>('#lname').value || '', race });
+    });
+    play.disabled = false;
+    if (!res.ok) { st.textContent = res.error ?? 'Connexion refusée.'; st.classList.add('err'); return; }
+    try { localStorage.setItem(LAST, account.trim().toLowerCase()); } catch { /* stockage indisponible */ }
+    hud.say(t.online ? 'Connecté au serveur : les autres joueurs de la carte sont visibles.' : 'Mode solo : ton personnage est sauvegardé dans ce navigateur.', 's');
+    box.remove();
     canvas.tabIndex = 0; canvas.focus();
   };
-  document.getElementById('play')!.addEventListener('click', go);
-  name.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') go(); });
+  play.addEventListener('click', go);
 }
 
 // décor d'accueil : la première carte en fond

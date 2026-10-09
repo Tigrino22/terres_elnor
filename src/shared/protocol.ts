@@ -4,8 +4,12 @@ import type { SpellId, Slot } from './data';
 
 export type Race = 'elfe' | 'humain';
 
+export type AuthMsg =
+  | { t: 'auth'; mode: 'login'; account: string; password: string }
+  | { t: 'auth'; mode: 'register'; account: string; password: string; name: string; race: Race };
+
 export type ClientMsg =
-  | { t: 'join'; name: string; race: Race }
+  | AuthMsg
   | { t: 'input'; seq: number; mx: number; mz: number }
   | { t: 'target'; id: number | null }
   | { t: 'cast'; spell: SpellId; mx?: number; mz?: number }
@@ -13,6 +17,9 @@ export type ClientMsg =
   | { t: 'harvest'; id: number }
   | { t: 'craft'; recipe: string }
   | { t: 'equip'; item: string }
+  | { t: 'unequip'; slot: Slot }
+  | { t: 'upgrade'; spell: SpellId }
+  | { t: 'resetSpells' }
   | { t: 'chat'; text: string };
 
 /** Entité visible sur la carte, envoyée 20 fois par seconde. */
@@ -51,6 +58,9 @@ export interface SelfState {
   cds: Partial<Record<SpellId | 'potPV' | 'potMP', number>>;
   inv: Record<string, number>;
   equip: Partial<Record<Slot, string>>;
+  /** rang de chaque sort (1 à 5) et points de sort à dépenser */
+  ranks: Partial<Record<SpellId, number>>;
+  points: number;
   target: number | null;
   harvesting: { id: number; t: number; total: number } | null;
   dead: number;
@@ -68,7 +78,25 @@ export type GameEvent =
   | { e: 'loot'; item: string; n: number }
   | { e: 'msg'; text: string; c?: 'm' | 'g' | 's' | 'w' | 'n' };
 
+/** Ce qui est écrit sur disque pour retrouver un personnage là où il était. */
+export interface SaveData {
+  v: 1;
+  map: string;
+  x: number;
+  z: number;
+  level: number;
+  xp: number;
+  ecus: number;
+  hp: number;
+  mp: number;
+  inv: Record<string, number>;
+  equip: Partial<Record<Slot, string>>;
+  ranks: Partial<Record<SpellId, number>>;
+}
+
 export type ServerMsg =
+  | { t: 'auth'; ok: boolean; error?: string }
+  | { t: 'kicked'; reason: string }
   | { t: 'welcome'; you: number }
   | { t: 'map'; map: string; x: number; z: number }
   | { t: 'snap'; tick: number; ack: number; ents: EntSnap[] }

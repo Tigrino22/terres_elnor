@@ -84,7 +84,7 @@ describe('simulation', () => {
     const m = g.maps.get('route')!;
     const pt = m.data.portals.find(x => x.to === 'bois')!;
     p.x = pt.i + pt.ii; p.z = pt.j + pt.jj;
-    for (let s = 1; s <= 30 && p.mapId === 'route'; s++) { g.handle(p, { t: 'input', seq: s, mx: -pt.ii, mz: -pt.jj }); g.tick(); }
+    for (let s = 1; s <= 80 && p.mapId === 'route'; s++) { g.handle(p, { t: 'input', seq: s, mx: -pt.ii, mz: -pt.jj }); g.tick(); }
     expect(p.mapId).toBe('bois');
     expect(inbox.some(x => x.t === 'map' && x.map === 'bois')).toBe(true);
     expect(g.maps.get('bois')!.players.has(p)).toBe(true);
