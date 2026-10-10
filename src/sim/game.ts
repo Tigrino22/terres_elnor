@@ -5,11 +5,22 @@ import { ITEMS, MAPS, MOBS, NODES, RECIPES, SPELLS, START_MAP, MobDef, SpellId, 
 import { generateMap, moveWithCollision, nearestFree, MapData } from '../shared/mapgen';
 import { rng, randInt, Rng } from '../shared/rng';
 import { AUTO_EVERY, AUTO_RANGE, DT, MAX_LEVEL, computeStats, xpFactor, xpNext, Stats } from '../shared/stats';
-import type { ClientMsg, EntSnap, GameEvent, Race, SelfState, ServerMsg } from '../shared/protocol';
+import { MAX_RANK, Ranks, pointsLeft, rankLevel, rankOf, spellFx, spentPoints } from '../shared/ranks';
+import type { AmiSave, ClientMsg, EntSnap, GameEvent, JoueurInfo, Race, SaveData, SelfState, ServerMsg } from '../shared/protocol';
 
 export interface Client { send(msg: ServerMsg): void }
 
+/** Sauvegarde automatique : toutes les 30 s, et à chaque étape importante. */
+export const AUTOSAVE_EVERY = 30;
+
 type Cd = SpellId | 'potPV' | 'potMP';
+
+/** Seule voie jouable pour l'instant ; sera un choix à la création quand les autres voies arriveront. */
+export const VOIE = 'Voie de l’Arc';
+export const MAX_AMIS = 50;
+/** Rafraîchissement de la liste des joueurs connectés, en secondes. */
+const SOCIAL_EVERY = 2;
+const memeNom = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 
 export class Player {
   x = 0; z = 0; f = 0;
@@ -18,10 +29,16 @@ export class Player {
   stats: Stats;
   inv: Record<string, number> = { potPV: 3, potMP: 2 };
   equip: Partial<Record<Slot, string>> = {};
+  ranks: Ranks = {};
+  amis: AmiSave[] = [];
+  lastSocial = '';
+  /** appelé avec l'état du personnage à chaque sauvegarde */
+  persist: ((s: SaveData) => void) | null = null;
   cds: Partial<Record<Cd, number>> = {};
   target: number | null = null;
   inputs: { seq: number; mx: number; mz: number }[] = [];
   lastSeq = 0;
+  moveCredit = 0;
   moving = false;
   lastHurt = -99; lastAtk = -99; atkTimer = 0;
   dead = 0;
@@ -38,6 +55,39 @@ export class Player {
     this.hp = Math.min(this.hp, s.mhp); this.sh = Math.min(this.sh, s.msh); this.mp = Math.min(this.mp, s.mmp);
   }
   msg(text: string, c: 'm' | 'g' | 's' | 'w' | 'n' = 'n') { this.priv.push({ e: 'msg', text, c }); }
+  toSave(): SaveData {
+    return {
+      v: 1, map: this.mapId, x: r2(this.x), z: r2(this.z), level: this.level, xp: this.xp, ecus: this.ecus,
+      hp: this.dead ? this.stats.mhp : Math.round(this.hp), mp: Math.round(this.mp),
+      inv: { ...this.inv }, equip: { ...this.equip }, ranks: { ...this.ranks }, amis: this.amis.map(a => ({ ...a })),
+    };
+  }
+  /** Relit une sauvegarde en ignorant tout ce qui n'existe plus dans les données du jeu. */
+  restore(s: SaveData) {
+    const int = (n: unknown, lo: number, hi: number, d: number) => Number.isFinite(n) ? Math.min(hi, Math.max(lo, Math.floor(n as number))) : d;
+    this.level = int(s.level, 1, MAX_LEVEL, 1);
+    this.xp = int(s.xp, 0, xpNext(this.level), 0);
+    this.ecus = int(s.ecus, 0, 1e9, 0);
+    this.inv = {};
+    for (const [k, q] of Object.entries(s.inv ?? {})) if (ITEMS[k] && int(q, 0, 1e6, 0) > 0) this.inv[k] = int(q, 0, 1e6, 0);
+    this.equip = {};
+    for (const [slot, id] of Object.entries(s.equip ?? {})) if (id && ITEMS[id]?.slot === slot) this.equip[slot as Slot] = id;
+    this.ranks = {};
+    for (const sp of SPELLS) {
+      const r = int(s.ranks?.[sp.id], 1, MAX_RANK, 1);
+      if (r > 1 && this.level >= rankLevel(sp.id, r)) this.ranks[sp.id] = r;
+    }
+    if (spentPoints(this.ranks) > this.level - 1) this.ranks = {};
+    this.amis = [];
+    for (const a of Array.isArray(s.amis) ? s.amis.slice(0, MAX_AMIS) : []) {
+      const name = String(a?.name ?? '').slice(0, 16);
+      if (name && !this.amis.some(b => memeNom(b.name, name))) this.amis.push({ name, race: a.race === 'humain' ? 'humain' : 'elfe', level: int(a.level, 1, MAX_LEVEL, 1) });
+    }
+    this.refreshStats();
+    this.hp = int(s.hp, 1, this.stats.mhp, this.stats.mhp);
+    this.mp = int(s.mp, 0, this.stats.mmp, this.stats.mmp);
+    this.sh = this.stats.msh;
+  }
 }
 
 class Mob {
@@ -46,7 +96,7 @@ class Mob {
   state: 'idle' | 'chase' | 'return' | 'dead' = 'idle';
   target: number | null = null;
   atkTimer = 0; special = 0;
-  rootUntil = 0; markUntil = 0;
+  rootUntil = 0; markUntil = 0; markBonus = 0.25;
   respawnAt = 0;
   wander: { x: number; z: number } | null = null; wanderAt = 0;
   tagged = new Map<number, number>();
@@ -58,7 +108,7 @@ class Mob {
 
 interface Loot { id: number; x: number; z: number; owner: number; items: Record<string, number>; ecus: number; until: number; freeAt: number }
 interface Node { id: number; kind: keyof typeof NODES; x: number; z: number; until: number }
-interface Trap { id: number; owner: number; x: number; z: number; armAt: number; until: number }
+interface Trap { id: number; owner: number; x: number; z: number; armAt: number; until: number; root: number; mult: number }
 interface Pending { at: number; run: () => void }
 
 export class MapInstance {
@@ -96,33 +146,102 @@ export class Game {
   private nextId = 1;
   r: Rng;
 
-  constructor(seed = 1) {
+  /** `start` : carte des nouveaux personnages (START_MAP en jeu ; les tests en choisissent une autre). */
+  constructor(seed = 1, public start = START_MAP) {
     this.r = rng(seed);
     for (const id of Object.keys(MAPS)) this.maps.set(id, new MapInstance(this, id));
   }
   newId() { return this.nextId++; }
 
   // ------------------------------------------------------------------ connexion
-  join(client: Client, name: string, race: Race): Player {
+  /** Fait entrer un personnage, neuf ou repris d'une sauvegarde, là où il s'était arrêté. */
+  join(client: Client, name: string, race: Race, save?: SaveData | null, persist?: (s: SaveData) => void): Player {
     const clean = (name || '').replace(/[^\p{L}\p{N} '-]/gu, '').trim().slice(0, 16) || 'Voyageur';
-    const p = new Player(this.newId(), clean, race === 'humain' ? 'humain' : 'elfe', client, START_MAP);
+    const back = !!save && !!this.maps.get(save.map);
+    const p = new Player(this.newId(), clean, race === 'humain' ? 'humain' : 'elfe', client, back ? save!.map : this.start);
+    if (save) p.restore(save);
+    p.persist = persist ?? null;
     this.players.set(p.id, p);
-    const m = this.maps.get(START_MAP)!;
-    const s = nearestFree(m.data, m.data.spawn.x, m.data.spawn.z);
+    const m = this.maps.get(p.mapId)!;
+    const s = back && Number.isFinite(save!.x) && Number.isFinite(save!.z) ? nearestFree(m.data, save!.x, save!.z) : nearestFree(m.data, m.data.spawn.x, m.data.spawn.z);
     p.x = s.x; p.z = s.z;
+    p.portalCd = 1.5;
     m.players.add(p);
     client.send({ t: 'welcome', you: p.id });
     client.send({ t: 'map', map: m.id, x: p.x, z: p.z });
-    p.msg(`Bienvenue dans les Terres d'Elnor, ${p.name}.`, 'g');
-    p.msg('ZQSD ou flèches pour bouger, l’arc tire tout seul. Sorts 1 à 6, potions 7 et 8.', 's');
+    if (save) {
+      p.msg(`Bon retour, ${p.name}. Tu reprends là où tu t’étais arrêté.`, 'g');
+      const pts = pointsLeft(p.level, p.ranks);
+      if (pts) p.msg(`${pts} point${pts > 1 ? 's' : ''} de sort à dépenser : touche K.`, 's');
+    } else {
+      p.msg(`Bienvenue dans les Terres d'Elnor, ${p.name}.`, 'g');
+      p.msg('ZQSD ou flèches pour bouger, l’arc tire tout seul. Sorts 1 à 6, potions 7 et 8.', 's');
+    }
     this.broadcastChat('', `${p.name} arrive sur ${m.data.def.name}.`);
+    for (const q of this.players.values()) if (q !== p && q.amis.some(a => memeNom(a.name, p.name))) q.msg(`Ton ami ${p.name} vient de se connecter.`, 'g');
+    this.socialDirty = true;
+    this.save(p);
     return p;
   }
 
+  save(p: Player) { p.persist?.(p.toSave()); }
+  saveAll() { for (const p of this.players.values()) this.save(p); }
+
   leave(p: Player) {
+    this.save(p);
+    p.persist = null;
     this.maps.get(p.mapId)?.players.delete(p);
     this.players.delete(p.id);
     for (const m of this.maps.values()) for (const mob of m.mobs) if (mob.target === p.id) { mob.target = null; mob.state = 'return'; }
+    // ses amis gardent son dernier niveau pour l'afficher hors ligne
+    for (const q of this.players.values()) for (const a of q.amis) if (memeNom(a.name, p.name)) { a.level = p.level; a.race = p.race; }
+    this.socialDirty = true;
+  }
+
+  // ------------------------------------------------------------------ amis et joueurs connectés
+  socialDirty = true;
+
+  private info(p: Player): JoueurInfo {
+    const d = MAPS[p.mapId];
+    return { name: p.name, race: p.race, voie: VOIE, level: p.level, online: true, map: d.name, coords: d.coords };
+  }
+
+  /** Envoie à chacun la liste des connectés et de ses amis, seulement si elle a changé. */
+  private sendSocial() {
+    const online = [...this.players.values()].map(p => this.info(p)).sort((a, b) => a.name.localeCompare(b.name, 'fr'));
+    for (const p of this.players.values()) {
+      const amis = p.amis.map(a => {
+        const on = online.find(o => memeNom(o.name, a.name));
+        if (on) { a.race = on.race; a.level = on.level; a.name = on.name; return on; }
+        return { name: a.name, race: a.race, voie: VOIE, level: a.level, online: false };
+      }).sort((a, b) => Number(b.online) - Number(a.online) || a.name.localeCompare(b.name, 'fr'));
+      const json = JSON.stringify([online, amis]);
+      if (json === p.lastSocial) continue;
+      p.lastSocial = json;
+      p.client.send({ t: 'social', online, amis });
+    }
+  }
+
+  private ami(p: Player, nom: string, add: boolean) {
+    const name = String(nom ?? '').trim().slice(0, 16);
+    if (!name) return;
+    if (!add) {
+      const before = p.amis.length;
+      p.amis = p.amis.filter(a => !memeNom(a.name, name));
+      if (p.amis.length < before) p.msg(`${name} n’est plus dans tes amis.`, 's');
+    } else {
+      const q = [...this.players.values()].find(o => memeNom(o.name, name));
+      if (!q) { p.msg(`Aucun personnage connecté ne s’appelle « ${name} ».`, 'w'); return; }
+      if (q === p) { p.msg('Tu ne peux pas t’ajouter toi-même.', 'w'); return; }
+      if (p.amis.some(a => memeNom(a.name, q.name))) { p.msg(`${q.name} est déjà dans tes amis.`, 'w'); return; }
+      if (p.amis.length >= MAX_AMIS) { p.msg(`Pas plus de ${MAX_AMIS} amis.`, 'w'); return; }
+      p.amis.push({ name: q.name, race: q.race, level: q.level });
+      p.msg(`${q.name} est maintenant dans tes amis.`, 'g');
+      q.msg(`${p.name} t’a ajouté à ses amis.`, 's');
+    }
+    p.lastSocial = '';
+    this.socialDirty = true;
+    this.save(p);
   }
 
   broadcastChat(from: string, text: string) {
@@ -135,8 +254,9 @@ export class Game {
     switch (msg.t) {
       case 'input': {
         if (!Number.isFinite(msg.seq) || !Number.isFinite(msg.mx) || !Number.isFinite(msg.mz)) return;
+        // direction normalisée : en diagonale on ne va pas plus vite qu'en ligne droite
         const l = Math.hypot(msg.mx, msg.mz);
-        const mx = l > 1 ? msg.mx / l : msg.mx, mz = l > 1 ? msg.mz / l : msg.mz;
+        const mx = l > 1e-6 ? msg.mx / l : 0, mz = l > 1e-6 ? msg.mz / l : 0;
         if (p.inputs.length < 40) p.inputs.push({ seq: msg.seq, mx, mz });
         break;
       }
@@ -157,6 +277,10 @@ export class Game {
       }
       case 'craft': this.craft(p, msg.recipe); break;
       case 'equip': this.equip(p, msg.item); break;
+      case 'unequip': this.unequip(p, msg.slot); break;
+      case 'upgrade': this.upgrade(p, msg.spell); break;
+      case 'resetSpells': this.resetSpells(p); break;
+      case 'ami': this.ami(p, msg.name, !!msg.add); break;
       case 'chat': {
         const text = String(msg.text || '').slice(0, 160).trim();
         if (text) this.broadcastChat(p.name, text);
@@ -171,6 +295,8 @@ export class Game {
     this.tickN++;
     for (const m of this.maps.values()) this.tickMap(m);
     for (const m of this.maps.values()) this.broadcast(m);
+    if (this.socialDirty || this.tickN % Math.round(SOCIAL_EVERY / DT) === 0) { this.socialDirty = false; this.sendSocial(); }
+    if (this.tickN % Math.round(AUTOSAVE_EVERY / DT) === 0) this.saveAll();
   }
 
   private tickMap(m: MapInstance) {
@@ -201,8 +327,8 @@ export class Game {
       const owner = this.players.get(tr.owner);
       m.events.push({ e: 'aoe', x: tr.x, z: tr.z, r: 2, kind: 'piege' });
       for (const o of m.mobs) if (o.state !== 'dead' && dist(o, tr) < 2) {
-        o.rootUntil = t + 3;
-        if (owner && owner.mapId === m.id) this.hitMob(owner, m, o, 1.0);
+        o.rootUntil = t + tr.root;
+        if (owner && owner.mapId === m.id) this.hitMob(owner, m, o, tr.mult);
       }
       tr.until = 0;
     }
@@ -230,10 +356,13 @@ export class Game {
       }
       return;
     }
-    // déplacement : une entrée par tick, rattrapage si le client a pris de l'avance
-    let n = p.inputs.length > 3 ? 2 : 1;
+    // déplacement : une entrée = un pas de durée DT. Le crédit gagne un pas par tick (3 au plus en réserve)
+    // pour rattraper un retard réseau, sans jamais permettre d'aller plus vite qu'un pas par tick en moyenne.
+    p.moveCredit = Math.min(3, p.moveCredit + 1);
+    let n = Math.min(2, Math.floor(p.moveCredit));
     p.moving = false;
     while (n-- > 0 && p.inputs.length) {
+      p.moveCredit--;
       const inp = p.inputs.shift()!;
       p.lastSeq = inp.seq;
       if (inp.mx || inp.mz) {
@@ -325,6 +454,7 @@ export class Game {
     to.players.add(p);
     p.client.send({ t: 'map', map: toId, x: p.x, z: p.z });
     p.msg(`Tu entres dans ${to.data.def.name} (${to.data.def.coords.join(', ').replace('-', '−')}).`, 's');
+    this.save(p);
   }
 
   // ------------------------------------------------------------------ monstres
@@ -414,10 +544,11 @@ export class Game {
   private hurt(p: Player, m: MapInstance, n: number) {
     if (p.dead) return;
     p.lastHurt = this.time;
-    let rest = Math.round(n);
+    // dégâts toujours entiers : le bouclier (qui se recharge par fractions) absorbe un nombre entier de points
+    let rest = Math.max(0, Math.round(n));
     if (p.sh > 0) {
-      const a = Math.min(p.sh, rest);
-      p.sh -= a; rest -= a;
+      const a = Math.min(rest, Math.ceil(p.sh));
+      p.sh = Math.max(0, p.sh - a); rest -= a;
       if (a) m.events.push({ e: 'dmg', id: p.id, n: a, shield: true });
     }
     if (rest > 0) { p.hp -= rest; m.events.push({ e: 'dmg', id: p.id, n: rest }); }
@@ -433,7 +564,7 @@ export class Game {
     if (o.state === 'dead') return;
     const [a, b] = p.stats.dmg;
     const crit = this.r() < p.stats.crit;
-    let n = (a + this.r() * (b - a)) * mult * (crit ? 1.5 : 1) * (o.markUntil > this.time ? 1.25 : 1);
+    let n = (a + this.r() * (b - a)) * mult * (crit ? 1.5 : 1) * (o.markUntil > this.time ? 1 + o.markBonus : 1);
     n = Math.max(1, Math.round(n));
     o.hp -= n;
     o.tagged.set(p.id, (o.tagged.get(p.id) ?? 0) + n);
@@ -462,6 +593,7 @@ export class Game {
 
   giveXp(p: Player, n: number, from: string) {
     if (p.level >= MAX_LEVEL || n <= 0) return;
+    const before = p.level;
     p.xp += n;
     p.msg(`+${n} XP (${from})`, 'g');
     while (p.level < MAX_LEVEL && p.xp >= xpNext(p.level)) {
@@ -473,7 +605,9 @@ export class Game {
       p.msg(`Niveau ${p.level} ! Tes PV, ton bouclier, ton mana et tes dégâts augmentent.`, 'g');
       const sp = SPELLS.find(s => s.level === p.level);
       if (sp) p.msg(`Nouveau sort : ${sp.name}.`, 'g');
+      p.msg('+1 point de sort : ouvre le grimoire avec K pour améliorer un sort.', 's');
     }
+    if (p.level !== before) this.save(p);
   }
 
   private give(p: Player, item: string, n: number) {
@@ -488,7 +622,8 @@ export class Game {
     const t = this.time;
     if (p.level < sp.level) return p.msg(`${sp.name} se débloque au niveau ${sp.level}.`, 'w');
     if ((p.cds[id] ?? 0) > t) return;
-    if (p.mp < sp.mana) return p.msg('Pas assez de mana.', 'w');
+    const fx = spellFx(id, rankOf(p.ranks, id));
+    if (p.mp < fx.mana) return p.msg('Pas assez de mana.', 'w');
     const tg = p.target != null ? m.mobs.find(o => o.id === p.target && o.state !== 'dead') : undefined;
     let dx = mx, dz = mz;
     if (!dx && !dz) { if (tg) { dx = tg.x - p.x; dz = tg.z - p.z; } else { dx = Math.sin(p.f); dz = Math.cos(p.f); } }
@@ -501,8 +636,8 @@ export class Game {
         if (dist(p, tg) > sp.range) return p.msg('Cible trop loin.', 'w');
         p.f = Math.atan2(tg.x - p.x, tg.z - p.z);
         m.events.push({ e: 'shot', from: p.id, to: tg.id, spell: id });
-        if (id === 'tir') m.pending.push({ at: t + dist(p, tg) / 22, run: () => this.hitMob(p, m, tg, sp.mult) });
-        else { tg.markUntil = t + 10; if (tg.state === 'idle') this.aggro(m, tg, p.id); }
+        if (id === 'tir') m.pending.push({ at: t + dist(p, tg) / 22, run: () => this.hitMob(p, m, tg, fx.mult) });
+        else { tg.markUntil = t + fx.markDur; tg.markBonus = fx.mark; if (tg.state === 'idle') this.aggro(m, tg, p.id); }
         break;
       }
       case 'percante': {
@@ -514,34 +649,34 @@ export class Game {
           if (o.state === 'dead') continue;
           const px = o.x - p.x, pz = o.z - p.z, along = px * dx + pz * dz;
           if (along < 0 || along > sp.range) continue;
-          if (Math.abs(px * dz - pz * dx) < 0.55 + o.def.radius) m.pending.push({ at: t + along / 24, run: () => this.hitMob(p, m, o, sp.mult) });
+          if (Math.abs(px * dz - pz * dx) < 0.55 + o.def.radius) m.pending.push({ at: t + along / 24, run: () => this.hitMob(p, m, o, fx.mult) });
         }
         break;
       }
       case 'pluie': {
         const cx = tg && dist(p, tg) <= sp.range ? tg.x : p.x + dx * 4, cz = tg && dist(p, tg) <= sp.range ? tg.z : p.z + dz * 4;
-        m.events.push({ e: 'aoe', x: r2(cx), z: r2(cz), r: 2.2, kind: 'pluie' });
+        m.events.push({ e: 'aoe', x: r2(cx), z: r2(cz), r: r2(fx.radius), kind: 'pluie' });
         [0.35, 0.85, 1.35].forEach(w => m.pending.push({
-          at: t + w, run: () => { for (const o of m.mobs) if (o.state !== 'dead' && Math.hypot(o.x - cx, o.z - cz) < 2.2 + o.def.radius) this.hitMob(p, m, o, sp.mult); },
+          at: t + w, run: () => { for (const o of m.mobs) if (o.state !== 'dead' && Math.hypot(o.x - cx, o.z - cz) < fx.radius + o.def.radius) this.hitMob(p, m, o, fx.mult); },
         }));
         break;
       }
       case 'piege': {
-        const tr = { id: this.newId(), owner: p.id, x: r2(p.x), z: r2(p.z), armAt: t + 0.5, until: t + 20 };
+        const tr = { id: this.newId(), owner: p.id, x: r2(p.x), z: r2(p.z), armAt: t + 0.5, until: t + 20, root: fx.root, mult: fx.mult };
         m.traps.push(tr);
         m.events.push({ e: 'trap', id: tr.id, x: tr.x, z: tr.z, on: true });
         break;
       }
       case 'vent': {
         const x0 = p.x, z0 = p.z;
-        const r = moveWithCollision(m.data, p.x, p.z, dx * 4, dz * 4);
+        const r = moveWithCollision(m.data, p.x, p.z, dx * fx.dash, dz * fx.dash);
         p.x = r.x; p.z = r.z; p.f = Math.atan2(dx, dz);
         m.events.push({ e: 'dash', id: p.id, x0: r2(x0), z0: r2(z0), x1: r2(p.x), z1: r2(p.z) });
         break;
       }
     }
-    p.mp -= sp.mana;
-    p.cds[id] = t + sp.cd;
+    p.mp -= fx.mana;
+    p.cds[id] = t + fx.cd;
     p.lastAtk = t;
     if (p.harvesting) p.harvesting = null;
   }
@@ -572,6 +707,7 @@ export class Game {
     p.msg(`Fabriqué : ${ITEMS[rc.out].name}.`, 'g');
     const def = ITEMS[rc.out];
     if (def.slot && !p.equip[def.slot]) this.equip(p, rc.out);
+    this.save(p);
   }
 
   private equip(p: Player, id: string) {
@@ -585,6 +721,36 @@ export class Game {
     p.msg(`Équipé : ${def.name}.`, 's');
   }
 
+  private unequip(p: Player, slot: Slot) {
+    const id = p.equip[slot];
+    if (!id) return;
+    delete p.equip[slot];
+    p.inv[id] = (p.inv[id] ?? 0) + 1;
+    p.refreshStats();
+    p.msg(`Retiré : ${ITEMS[id].name}.`, 's');
+  }
+
+  // ------------------------------------------------------------------ grimoire
+  private upgrade(p: Player, id: SpellId) {
+    const sp = SPELLS.find(s => s.id === id);
+    if (!sp) return;
+    const r = rankOf(p.ranks, id);
+    if (p.level < sp.level) return p.msg(`${sp.name} se débloque au niveau ${sp.level}.`, 'w');
+    if (r >= MAX_RANK) return p.msg(`${sp.name} est déjà au rang maximum.`, 'w');
+    if (pointsLeft(p.level, p.ranks) <= 0) return p.msg('Plus de point de sort : monte de niveau pour en gagner.', 'w');
+    if (p.level < rankLevel(id, r + 1)) return p.msg(`Le rang ${r + 1} de ${sp.name} demande le niveau ${rankLevel(id, r + 1)}.`, 'w');
+    p.ranks[id] = r + 1;
+    p.msg(`${sp.name} passe au rang ${r + 1}.`, 'g');
+    this.save(p);
+  }
+
+  private resetSpells(p: Player) {
+    if (!Object.keys(p.ranks).length) return;
+    p.ranks = {};
+    p.msg(`Points de sort rendus : ${pointsLeft(p.level, p.ranks)} à répartir.`, 's');
+    this.save(p);
+  }
+
   // ------------------------------------------------------------------ diffusion
   private broadcast(m: MapInstance) {
     const t = this.time;
@@ -592,7 +758,7 @@ export class Game {
     const ents: EntSnap[] = [];
     for (const p of m.players) ents.push({
       id: p.id, k: 'p', x: r2(p.x), z: r2(p.z), s: p.race, name: p.name, lv: p.level,
-      hp: Math.round(p.hp), mhp: p.stats.mhp, f: r2(p.f), fl: (p.dead ? 1 : 0) | (t - p.lastAtk < 4 ? 8 : 0), tg: p.target ?? undefined,
+      hp: Math.round(p.hp), mhp: p.stats.mhp, f: r2(p.f), fl: (p.dead ? 1 : 0) | (t - p.lastAtk < 4 ? 8 : 0), tg: p.target ?? undefined, eq: p.equip,
     });
     for (const o of m.mobs) if (o.state !== 'dead') ents.push({
       id: o.id, k: 'm', x: r2(o.x), z: r2(o.z), s: o.kind, lv: o.def.level, hp: Math.round(o.hp), mhp: o.def.hp, f: r2(o.f),
@@ -619,6 +785,7 @@ export class Game {
       id: p.id, name: p.name, race: p.race, level: p.level, xp: p.xp, xpNext: xpNext(p.level),
       hp: Math.round(p.hp), mhp: p.stats.mhp, sh: Math.round(p.sh), msh: p.stats.msh, mp: Math.round(p.mp), mmp: p.stats.mmp,
       ecus: p.ecus, dmg: p.stats.dmg, crit: p.stats.crit, speed: p.stats.speed, cds, inv: { ...p.inv }, equip: { ...p.equip },
+      ranks: { ...p.ranks }, points: pointsLeft(p.level, p.ranks),
       target: p.target, harvesting: p.harvesting && { ...p.harvesting, t: r2(p.harvesting.t) }, dead: p.dead ? r2(Math.max(0, p.dead - t)) : 0,
     };
   }

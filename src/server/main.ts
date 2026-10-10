@@ -9,10 +9,13 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { Game, Player } from '../sim/game';
 import { DT } from '../shared/stats';
 import type { ClientMsg } from '../shared/protocol';
+import { authenticate } from '../sim/accounts';
+import { JsonFileStore, scryptHasher } from './store';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const PORT = Number(process.env.PORT ?? 8080);
 const prod = process.env.NODE_ENV === 'production';
+const DATA = path.resolve(root, process.env.DATA_DIR ?? 'data');
 
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.json': 'application/json' };
 
@@ -34,26 +37,60 @@ async function main() {
     fs.createReadStream(file).pipe(res);
   });
 
+  const store = JsonFileStore.open(path.join(DATA, 'comptes.json'));
   const game = new Game(Date.now() & 0xffff);
+  // un compte = une seule session : une nouvelle connexion remplace l'ancienne
+  const online = new Map<string, { kick(): void }>();
   const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 4096 });
   wss.on('connection', ws => {
     let player: Player | null = null;
+    let busy = false, fails = 0;
     let budget = 60; // messages par seconde, contre le spam
     const refill = setInterval(() => { budget = 60; }, 1000);
     const client = { send: (m: unknown) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(m)); } };
-    ws.on('message', raw => {
+    const session = {
+      kick() {
+        if (!player) return;
+        client.send({ t: 'kicked', reason: 'Ce personnage vient de se connecter depuis un autre onglet ou appareil.' });
+        game.leave(player); player = null;
+        ws.close();
+      },
+    };
+    let key = '';
+    ws.on('message', async raw => {
       if (--budget < 0) return;
       let msg: ClientMsg;
       try { msg = JSON.parse(String(raw)); } catch { return; }
       if (!msg || typeof msg !== 'object') return;
-      if (!player) { if (msg.t === 'join') player = game.join(client, String(msg.name ?? ''), msg.race); return; }
-      game.handle(player, msg);
+      if (player) { game.handle(player, msg); return; }
+      if (msg.t !== 'auth' || busy) return;
+      busy = true;
+      const r = await authenticate(store, scryptHasher, msg).catch(() => ({ ok: false as const, error: 'Erreur du serveur, réessaie.' }));
+      busy = false;
+      if (ws.readyState !== WebSocket.OPEN) return;
+      if (!r.ok) {
+        client.send({ t: 'auth', ok: false, error: r.error });
+        if (++fails >= 5) ws.close();
+        return;
+      }
+      const acc = r.acc;
+      online.get(acc.account)?.kick();
+      key = acc.account;
+      online.set(key, session);
+      client.send({ t: 'auth', ok: true });
+      player = game.join(client, acc.name, acc.race, acc.save, save => { acc.save = save; store.put(acc); });
     });
     ws.on('close', () => {
       clearInterval(refill);
-      if (player) { game.leave(player); game.broadcastChat('', `${player.name} a quitté le jeu.`); }
+      if (online.get(key) === session) online.delete(key);
+      if (player) { game.leave(player); game.broadcastChat('', `${player.name} a quitté le jeu.`); player = null; }
     });
   });
+
+  // arrêt propre : tout le monde est sauvegardé avant de quitter
+  const shutdown = () => { game.saveAll(); store.flush(); process.exit(0); };
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 
   // boucle fixe à 20 ticks par seconde, avec rattrapage si le processus a pris du retard
   let last = performance.now(), acc = 0;
@@ -65,7 +102,7 @@ async function main() {
     if (n >= 5) acc = 0;
   }, 10);
 
-  server.listen(PORT, () => console.log(`Terres d'Elnor sur http://localhost:${PORT} (${prod ? 'production' : 'développement'})`));
+  server.listen(PORT, () => console.log(`Terres d'Elnor sur http://localhost:${PORT} (${prod ? 'production' : 'développement'}) · comptes dans ${DATA}`));
 }
 
 main();

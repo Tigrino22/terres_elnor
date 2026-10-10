@@ -18,6 +18,8 @@ export interface MapData {
   portals: PortalTile[];
   spawn: { x: number; z: number };
   cave?: { i: number; j: number };
+  /** case du feu de camp (cartes `camp`) */
+  camp?: { i: number; j: number; tentes: { i: number; j: number; rot: number }[] };
 }
 
 const segDist = (px: number, pz: number, ax: number, az: number, bx: number, bz: number) => {
@@ -46,7 +48,7 @@ export function generateMap(def: MapDef): MapData {
     const mx = p.i + p.ii * 4, mz = p.j + p.jj * 4;
     paths.push([p.i, p.j, mx, mz], [mx, mz, c, c]);
   });
-  const clear: [number, number, number][] = [[c, c, 3.2]];
+  const clear: [number, number, number][] = [[c, c, def.camp ? 5 : 3.2]];
   portals.forEach(p => clear.push([p.i + p.ii, p.j + p.jj, 2.6]));
   def.mobs.forEach(g => clear.push([g.i, g.j, g.count > 1 ? 3 : 2.4]));
   def.nodes.forEach(n => clear.push([n.i, n.j, 1.6]));
@@ -63,6 +65,8 @@ export function generateMap(def: MapDef): MapData {
     }
     if (def.cliff && j + (noise(i * 0.35, 3) - 0.5) * 3 < def.cliff && !isClear(i, j)) t = T.Falaise;
     if (onPath(i, j)) t = T.Chemin;
+    // place du campement : un rond de terre battue autour du feu
+    if (def.camp && Math.hypot(i - c, j - c) < 2.6 + (noise(i * 0.7, j * 0.7) - 0.5) * 0.8) t = T.Chemin;
     tile[k] = t;
     if (t === T.Eau || t === T.Falaise) blocked[k] = 1;
   }
@@ -96,7 +100,14 @@ export function generateMap(def: MapDef): MapData {
     cave = { i: def.cave.i, j: Math.max(1, j - 1) };
   }
 
-  return { def, size: N, tile, blocked, decor, portals, spawn: { x: c, z: c }, cave };
+  let camp: MapData['camp'];
+  if (def.camp) {
+    const ci = Math.round(c), cj = Math.round(c);
+    camp = { i: ci, j: cj, tentes: [{ i: ci - 3, j: cj - 2, rot: 0.6 }, { i: ci + 3, j: cj - 2, rot: -0.6 }, { i: ci + 3, j: cj + 3, rot: -2.4 }] };
+    for (const p of [{ i: ci, j: cj }, ...camp.tentes]) blocked[idx(p.i, p.j)] = 1;
+  }
+
+  return { def, size: N, tile, blocked, decor, portals, spawn: { x: c, z: c + 2 }, cave, camp };
 }
 
 export function isBlocked(m: MapData, x: number, z: number): boolean {

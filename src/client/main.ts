@@ -9,7 +9,7 @@ import type { EntSnap, GameEvent, Race, SelfState, ServerMsg } from '../shared/p
 import { World3D } from './world3d';
 import { Hud } from './hud';
 import { connectWs, localGame, Transport } from './net';
-import { playerModel, trapModel } from './models';
+import { MOB_ART, NODE_ART, SPELL_ART, playerModel, trapModel } from './assets';
 
 const canvas = document.getElementById('view') as HTMLCanvasElement;
 const world = new World3D(canvas);
@@ -33,7 +33,11 @@ const hud = new Hud({
   use: item => { net?.send({ t: 'use', item }); hud.flashSlot(item); },
   craft: recipe => net?.send({ t: 'craft', recipe }),
   equip: item => net?.send({ t: 'equip', item }),
+  unequip: slot => net?.send({ t: 'unequip', slot }),
+  upgrade: spell => net?.send({ t: 'upgrade', spell }),
+  resetSpells: () => net?.send({ t: 'resetSpells' }),
   chat: text => net?.send({ t: 'chat', text }),
+  ami: (name, add) => net?.send({ t: 'ami', name, add }),
 });
 
 // ------------------------------------------------------------------ entrées
@@ -90,9 +94,12 @@ addEventListener('keydown', e => {
   }
   if (e.code === 'Space') { e.preventDefault(); castSpell('vent'); return; }
   if (k === 'e') harvestNearest();
+  else if (k === 'c') hud.toggleEquip();
+  else if (k === 'k') hud.toggleSpells();
   else if (k === 'i') hud.toggleInv('sac');
   else if (k === 'f') hud.toggleInv('atelier');
   else if (k === 'm') hud.toggleMap();
+  else if (k === 'o') hud.toggleAmis();
   else if (k === 'h') hud.toggle('#help');
   keys.add(k);
   if (k.startsWith('arrow')) e.preventDefault();
@@ -117,6 +124,11 @@ canvas.addEventListener('mousemove', e => { canvas.style.cursor = net && world.p
 // ------------------------------------------------------------------ messages du serveur
 function onMessage(m: ServerMsg) {
   switch (m.t) {
+    case 'auth':
+      if (m.ok) net = conn;
+      authWait?.(m); authWait = null;
+      break;
+    case 'kicked': net = null; lost('Session fermée', m.reason); break;
     case 'welcome': selfId = m.you; world.selfId = m.you; break;
     case 'map': enterMap(m.map, m.x, m.z); break;
     case 'snap': {
@@ -136,14 +148,16 @@ function onMessage(m: ServerMsg) {
     }
     case 'self': {
       const lvl = self?.level;
+      if (!self || JSON.stringify(self.equip) !== JSON.stringify(m.s.equip)) renderPortraits(m.s);
       self = m.s;
       world.targetId = m.s.target;
       hud.updateSelf(m.s);
-      if (lvl && m.s.level > lvl) hud.banner(`Niveau ${m.s.level}`, 'PV, bouclier, mana et dégâts augmentent');
+      if (lvl && m.s.level > lvl) hud.banner(`Niveau ${m.s.level}`, 'PV, bouclier, mana et dégâts augmentent · +1 point de sort (K)');
       break;
     }
     case 'ev': m.ev.forEach(onEvent); break;
     case 'chat': hud.chatLine(m.from, m.text); break;
+    case 'social': hud.setSocial(m.online, m.amis); break;
   }
 }
 
@@ -175,13 +189,13 @@ function onEvent(ev: GameEvent) {
       if (!from) return;
       const to = ev.tx !== undefined ? new THREE.Vector3(ev.tx, 0.7, ev.tz) : world.posOf(ev.to, 0.55);
       if (!to) return;
-      const style: Record<string, [number, number, boolean]> = { tir: [0xffd27a, 24, true], percante: [0xb8ffb0, 26, true], marque: [0xff6a4a, 24, false] };
-      const [col, sp, big] = ev.spell ? style[ev.spell] ?? [0xb8ffb0, 18, false] : [0xd8ffd0, 18, false];
-      world.arrow(from, to, sp, col, big);
+      const shot = ev.spell ? SPELL_ART[ev.spell].shot : undefined;
+      if (shot) world.arrow(from, to, shot.speed, shot.color, shot.big); else world.arrow(from, to);
       if (ev.from === selfId) facing = Math.atan2(to.x - from.x, to.z - from.z);
       break;
     }
     case 'dmg': {
+      ev.n = Math.round(ev.n);
       const v = world.views.get(ev.id);
       const p = screenOf(ev.id); if (!p) return;
       if (v && !ev.heal) v.hit = 1;
@@ -200,8 +214,8 @@ function onEvent(ev: GameEvent) {
     }
     case 'tele': world.telegraph(ev.x, ev.z, ev.r, ev.dur); break;
     case 'aoe':
-      if (ev.kind === 'pluie') world.rain(ev.x, ev.z, ev.r);
-      else if (ev.kind === 'piege') world.ringFx(ev.x, ev.z, ev.r, 0x8ae05a, 0.8);
+      if (ev.kind === 'pluie') world.rain(ev.x, ev.z, ev.r, SPELL_ART.pluie.ground!);
+      else if (ev.kind === 'piege') world.ringFx(ev.x, ev.z, ev.r, SPELL_ART.piege.ground!, 0.8);
       else { world.ringFx(ev.x, ev.z, ev.r, 0xc8905a, 0.7); world.ringFx(ev.x, ev.z, ev.r * 0.6, 0xff6a3a, 0.5); }
       break;
     case 'trap': {
@@ -209,7 +223,7 @@ function onEvent(ev: GameEvent) {
       else { const t = traps.get(ev.id); if (t) world.scene.remove(t); traps.delete(ev.id); }
       break;
     }
-    case 'dash': world.dash(ev.x0, ev.z0, ev.x1, ev.z1, MOBS.alpha && ev.id !== selfId && world.views.get(ev.id)?.k === 'm' ? 0xc8905a : 0xd8ffff); break;
+    case 'dash': world.dash(ev.x0, ev.z0, ev.x1, ev.z1, world.views.get(ev.id)?.k === 'm' ? 0xc8905a : SPELL_ART.vent.ground); break;
     case 'levelup': world.levelUp(ev.id); break;
     case 'loot': {
       const name = ev.item === 'ecus' ? 'écus' : ITEMS[ev.item]?.name ?? ev.item;
@@ -267,7 +281,7 @@ function drawLabels() {
     if (v.k === 'm') {
       if (me && Math.hypot(v.x - me.x, v.z - me.z) > 9 && self?.target !== e.id) continue;
       const d = MOBS[e.s!];
-      const p = world.project(v.x, h + (e.s === 'alpha' ? 1.65 : e.s === 'gorrok' ? 1.35 : 1.05), v.z); if (!p.on) continue;
+      const p = world.project(v.x, h + (MOB_ART[e.s!]?.labelY ?? 1.05), v.z); if (!p.on) continue;
       const col = d.special ? '#ff6a4a' : d.aggro ? '#ff9a86' : '#f2d27a';
       const fx = [(e.fl ?? 0) & 2 ? 'immobilisé' : '', (e.fl ?? 0) & 4 ? 'marqué' : ''].filter(Boolean).join(' · ');
       const showBar = (e.hp ?? 0) < (e.mhp ?? 0) || self?.target === e.id;
@@ -279,7 +293,7 @@ function drawLabels() {
     } else if (v.k === 'n' && me) {
       const d = Math.hypot(v.x - me.x, v.z - me.z);
       if (d > 3.2) continue;
-      const p = world.project(v.x, h + (e.s === 'frene' ? 2.0 : 0.75), v.z);
+      const p = world.project(v.x, h + NODE_ART[e.s as keyof typeof NODES].labelY, v.z);
       const name = NODES[e.s as keyof typeof NODES].name;
       const gone = (e.fl ?? 0) & 16;
       hud.label('e' + e.id, p.x, p.y, gone ? `${name} · repousse…` : d <= 1.9 ? `${name} · <kbd>E</kbd> récolter` : name, 'lab node');
@@ -296,60 +310,121 @@ function drawLabels() {
   hud.endLabels();
 }
 
-// ------------------------------------------------------------------ portrait
-function renderPortrait(race: Race) {
-  const rt = new THREE.WebGLRenderTarget(96, 96, { samples: 4 });
+// ------------------------------------------------------------------ portrait et silhouette
+/** Rend le modèle du personnage hors écran (portrait du cadre, silhouette de l'équipement). */
+function renderModel(race: Race, equip: SelfState['equip'], w: number, h: number, fov: number, eye: [number, number, number], look: number) {
+  const rt = new THREE.WebGLRenderTarget(w, h, { samples: 4 });
   rt.texture.colorSpace = THREE.SRGBColorSpace;
   const sc = new THREE.Scene();
   sc.add(new THREE.HemisphereLight(0xd8ecff, 0x4a3d24, 1.4));
   const sun = new THREE.DirectionalLight(0xffe8c4, 2.4); sun.position.set(-1, 2, 2); sc.add(sun);
-  const m = playerModel(race); m.rotation.y = 0.35; sc.add(m);
-  const cam = new THREE.PerspectiveCamera(26, 1, 0.1, 10); cam.position.set(0, 1.12, 0.95); cam.lookAt(0, 1.02, 0);
-  world.renderer.setRenderTarget(rt); world.renderer.render(sc, cam); world.renderer.setRenderTarget(null);
-  const px = new Uint8Array(96 * 96 * 4);
-  world.renderer.readRenderTargetPixels(rt, 0, 0, 96, 96, px);
-  const cv = document.createElement('canvas'); cv.width = cv.height = 96;
-  const c = cv.getContext('2d')!, img = c.createImageData(96, 96);
-  for (let y = 0; y < 96; y++) img.data.set(px.subarray((95 - y) * 384, (96 - y) * 384), y * 384);
+  const m = playerModel(race, equip); m.rotation.y = 0.35; sc.add(m);
+  const cam = new THREE.PerspectiveCamera(fov, w / h, 0.1, 20); cam.position.set(...eye); cam.lookAt(0, look, 0);
+  const clear = world.renderer.getClearAlpha();
+  world.renderer.setClearAlpha(0);
+  world.renderer.setRenderTarget(rt); world.renderer.clear(); world.renderer.render(sc, cam); world.renderer.setRenderTarget(null);
+  world.renderer.setClearAlpha(clear);
+  const px = new Uint8Array(w * h * 4);
+  world.renderer.readRenderTargetPixels(rt, 0, 0, w, h, px);
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  const c = cv.getContext('2d')!, img = c.createImageData(w, h);
+  for (let y = 0; y < h; y++) img.data.set(px.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4);
   c.putImageData(img, 0, 0);
-  hud.setPortrait(cv);
   rt.dispose();
+  return cv;
 }
 
-// ------------------------------------------------------------------ accueil
-function login() {
-  document.body.insertAdjacentHTML('beforeend', `<div id="login"><div class="box panel">
+function renderPortraits(s: SelfState) {
+  hud.setPortrait(renderModel(s.race, s.equip, 96, 96, 26, [0, 1.12, 0.95], 1.02));
+  hud.setDoll(renderModel(s.race, s.equip, 150, 300, 30, [0, 0.75, 3.1], 0.66));
+}
+
+// ------------------------------------------------------------------ connexion
+const LAST = 'elnor.dernierCompte';
+let conn: Transport | null = null;
+let authWait: ((r: { ok: boolean; error?: string }) => void) | null = null;
+
+function lost(title: string, text: string) {
+  if (document.getElementById('lost')) return;
+  document.body.insertAdjacentHTML('beforeend', `<div id="lost"><div class="box panel"><h2>${title}</h2><p>${text}</p><div class="btn" id="relog">Revenir à la connexion</div></div></div>`);
+  document.getElementById('relog')!.addEventListener('click', () => location.reload());
+}
+
+async function login() {
+  let last = '';
+  try { last = localStorage.getItem(LAST) ?? ''; } catch { /* stockage indisponible */ }
+  document.body.insertAdjacentHTML('beforeend', `<div id="login" class="${last ? '' : 'register'}"><div class="box panel">
     <h1>Terres d'Elnor</h1><div class="s">Prototype jouable · V1 PvM</div>
-    <label>Nom du personnage</label><input id="lname" maxlength="16" placeholder="Lyraël">
-    <label>Peuple</label><div class="races">
-      <div class="race on" data-r="elfe"><b>Elfe de Sylvaë</b>Archère des forêts</div>
-      <div class="race" data-r="humain"><b>Humain d’Aldmar</b>Rôdeur des plaines</div></div>
-    <label>Voie</label><div class="races"><div class="race on" style="cursor:default"><b>Voie de l’Arc</b>Tir à distance, pièges</div><div class="race" style="opacity:.45;cursor:default"><b>Lame et Arcane</b>Prochain jalon</div></div>
-    <div class="btn" id="play" style="margin-top:18px">Entrer dans le monde</div><div class="st"></div></div></div>`);
+    <div class="tabs2 lt"><span class="tab ${last ? 'on' : ''}" data-m="login">Se connecter</span><span class="tab ${last ? '' : 'on'}" data-m="register">Créer un personnage</span></div>
+    <form autocomplete="on" onsubmit="return false">
+    <label>Identifiant du compte</label><input id="lacc" maxlength="20" autocomplete="username" placeholder="lyrael" value="${last.replace(/[^a-z0-9_.-]/g, '')}">
+    <label>Mot de passe</label><input id="lpass" type="password" maxlength="72" autocomplete="current-password" placeholder="6 caractères au minimum">
+    <div class="reg">
+      <label>Nom du personnage</label><input id="lname" maxlength="16" placeholder="Lyraël">
+      <label>Peuple</label><div class="races">
+        <div class="race on" data-r="elfe"><b>Elfe de Sylvaë</b>Archère des forêts</div>
+        <div class="race" data-r="humain"><b>Humain d’Aldmar</b>Rôdeur des plaines</div></div>
+      <label>Voie</label><div class="races"><div class="race on" style="cursor:default"><b>Voie de l’Arc</b>Tir à distance, pièges</div><div class="race" style="opacity:.45;cursor:default"><b>Lame et Arcane</b>Prochain jalon</div></div>
+    </div>
+    <button class="btn" id="play" type="submit" style="margin-top:18px;width:100%">Entrer dans le monde</button></form>
+    <div class="st"></div><div class="mode">Recherche du serveur…</div></div></div>`);
+  const box = document.getElementById('login')!;
+  const $l = <E extends HTMLElement>(sel: string) => box.querySelector(sel) as E;
+  let mode: 'login' | 'register' = last ? 'login' : 'register';
   let race: Race = 'elfe';
-  document.querySelectorAll<HTMLElement>('#login .race[data-r]').forEach(r => r.addEventListener('click', () => {
+  const play = $l<HTMLButtonElement>('#play'), st = $l<HTMLElement>('.st');
+  const setMode = (m: typeof mode) => {
+    mode = m;
+    box.classList.toggle('register', m === 'register');
+    box.querySelectorAll<HTMLElement>('.lt .tab').forEach(t => t.classList.toggle('on', t.dataset.m === m));
+    $l<HTMLInputElement>('#lpass').autocomplete = m === 'login' ? 'current-password' : 'new-password';
+    play.textContent = m === 'login' ? 'Entrer dans le monde' : 'Créer et entrer dans le monde';
+    st.textContent = ''; st.classList.remove('err');
+  };
+  setMode(mode);
+  box.querySelectorAll<HTMLElement>('.lt .tab').forEach(t => t.addEventListener('click', () => setMode(t.dataset.m as typeof mode)));
+  box.querySelectorAll<HTMLElement>('.race[data-r]').forEach(r => r.addEventListener('click', () => {
     race = r.dataset.r as Race;
-    document.querySelectorAll('#login .race[data-r]').forEach(o => o.classList.toggle('on', o === r));
+    box.querySelectorAll('.race[data-r]').forEach(o => o.classList.toggle('on', o === r));
   }));
-  const name = document.getElementById('lname') as HTMLInputElement;
-  const st = document.querySelector('#login .st') as HTMLElement;
-  name.focus();
-  const go = async () => {
-    st.textContent = 'Connexion…';
-    let t: Transport;
-    try { t = await connectWs(); st.textContent = ''; }
-    catch { t = await localGame(); hud.say('Pas de serveur joignable : partie solo dans le navigateur.', 's'); }
-    net = t;
+  box.querySelectorAll('input').forEach(i => i.addEventListener('keydown', e => e.stopPropagation()));
+  ($l<HTMLInputElement>(last ? '#lpass' : '#lacc')).focus();
+
+  // on cherche le serveur tout de suite : le joueur sait où vit son personnage avant de s'inscrire
+  const modeEl = $l<HTMLElement>('.mode');
+  const ready = connectWs().catch(() => localGame()).then(t => {
+    conn = t;
     t.onMessage = onMessage;
-    t.onClose = reason => { hud.say(reason + ' Recharge la page pour revenir.', 'w'); };
-    t.send({ t: 'join', name: name.value || 'Lyraël', race });
-    hud.say(t.online ? 'Connecté au serveur : les autres joueurs de la carte sont visibles.' : 'Mode solo.', 's');
-    renderPortrait(race);
-    document.getElementById('login')!.remove();
+    t.onClose = reason => {
+      if (authWait) { authWait({ ok: false, error: reason }); authWait = null; }
+      if (net) lost('Connexion perdue', `${reason} Ta progression est sauvegardée.`);
+    };
+    modeEl.innerHTML = t.online
+      ? '<b>Serveur en ligne</b> · personnage sauvegardé sur le serveur, les autres joueurs sont visibles'
+      : 'Pas de serveur joignable : <b>mode solo</b>, personnage sauvegardé dans ce navigateur';
+    return t;
+  });
+
+  const go = async () => {
+    if (play.disabled) return;
+    const account = $l<HTMLInputElement>('#lacc').value, password = $l<HTMLInputElement>('#lpass').value;
+    play.disabled = true; st.classList.remove('err');
+    st.textContent = mode === 'login' ? 'Connexion…' : 'Création du personnage…';
+    const t = await ready;
+    const res = await new Promise<{ ok: boolean; error?: string }>(resolve => {
+      authWait = resolve;
+      t.send(mode === 'login'
+        ? { t: 'auth', mode, account, password }
+        : { t: 'auth', mode, account, password, name: $l<HTMLInputElement>('#lname').value || '', race });
+    });
+    play.disabled = false;
+    if (!res.ok) { st.textContent = res.error ?? 'Connexion refusée.'; st.classList.add('err'); return; }
+    try { localStorage.setItem(LAST, account.trim().toLowerCase()); } catch { /* stockage indisponible */ }
+    hud.say(t.online ? 'Connecté au serveur : les autres joueurs de la carte sont visibles.' : 'Mode solo : ton personnage est sauvegardé dans ce navigateur.', 's');
+    box.remove();
     canvas.tabIndex = 0; canvas.focus();
   };
-  document.getElementById('play')!.addEventListener('click', go);
-  name.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') go(); });
+  play.addEventListener('click', go);
 }
 
 // décor d'accueil : la première carte en fond
